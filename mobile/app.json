@@ -1,0 +1,56 @@
+{
+  "expo": {
+    "name": "Ember & Wick",
+    "slug": "ember-and-wick",
+    "version": "1.0.0",
+    "scheme": "emberwick",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#faf7f2"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "in.emberandwick.app",
+      "buildNumber": "1",
+      "infoPlist": {
+        "NSUserTrackingUsageDescription": "Not used. Ember & Wick does not track you across apps."
+      }
+    },
+    "android": {
+      "package": "in.emberandwick.app",
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#faf7f2"
+      },
+      "permissions": ["POST_NOTIFICATIONS", "INTERNET"],
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [{ "scheme": "emberwick", "host": "*" }],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
+      ]
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      ["expo-notifications", { "color": "#a45c2b" }],
+      ["expo-splash-screen", { "backgroundColor": "#faf7f2", "image": "./assets/splash.png", "resizeMode": "contain" }]
+    ],
+    "extra": {
+      "eas": { "projectId": "" }
+    }
+  }
+}
