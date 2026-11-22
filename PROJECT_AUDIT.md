@@ -1,0 +1,85 @@
+# Project Audit — Ember & Wick
+
+Audit date: 22 November 2026. Repository started empty apart from the cloud project scaffold, so
+this audit records the architecture that was built and the gaps that remain, rather than an
+inventory of pre-existing third-party code.
+
+## Repository layout
+
+```
+/
+├── web/                     Next.js 16 App Router app — storefront, admin, and the shared API
+│   ├── migrations/          D1 schema (0001_init.sql, 0002_device_tokens.sql)
+│   ├── public/images/       Product and brand imagery
+│   ├── scripts/             seed.mjs, api-test.mjs, gen-schema.mjs, dev helpers
+│   └── src/
+│       ├── app/             29 pages + 37 API route handlers
+│       ├── components/      UI primitives, product cards, admin tables
+│       ├── lib/             Domain: db, auth, crypto, orders, payments, validation, config
+│       │   └── services/    cart, catalog, checkout, payments, orders, notify, addresses, analytics
+│       └── types/
+├── mobile/                  Expo SDK 54 / React Native 0.81 app (native components only)
+│   ├── app/                 expo-router screens (tabs + stack)
+│   └── src/                 api client, auth context, hooks, UI components, theme
+└── *.md                     Release documentation
+```
+
+## Stack and dependencies
+
+| Layer | Choice | Why |
+| --- | --- | --- |
+| Web + API | Next.js 16.4.6 (App Router), React 19.2 | One deployable unit owns storefront, admin and `/api/v1`, so web and mobile share identical business rules |
+| Runtime | Cloudflare Workers via OpenNext 1.20.12 + Wrangler 4.166 | Only hosting shape available in this environment; Next 15.5 was rejected by OpenNext's support policy, hence the upgrade |
+| Database | Cloudflare D1 (SQLite) | Transactional `batch()`, `CHECK` constraints, no separate DB server |
+| Validation | zod | Server-side validation on every mutating endpoint |
+| Tests | vitest | 50 unit tests (money, validation, password, orders state machine, config) |
+| Mobile | Expo 54, expo-router 6, RN 0.81 | Native screens, SecureStore sessions, in-app browser for payment |
+| Payments | Razorpay REST + Web Crypto HMAC | No SDK weight; signatures and webhooks verified server-side |
+
+No native-only crypto or Node APIs are used in the request path: PBKDF2 and HMAC go through Web
+Crypto, so the same code runs on Workers and under `next dev`.
+
+## Shared business logic
+
+There is exactly one implementation of pricing, discounts, stock and order state, in
+`web/src/lib/services/*`. Both clients call it over HTTP:
+
+- **Server-priced checkout.** `quoteCheckout` and `createOrder` recompute every line from the
+  database; a client-supplied price is never read.
+- **Atomic order creation.** Stock decrement, coupon increment, order insert, item insert and cart
+  clear happen in a single `db.batch()`. `CHECK (stock >= 0)` and
+  `CHECK (used_count <= usage_limit)` abort the whole batch on over-sell or coupon abuse.
+- **Order state machine.** `lib/orders.ts` defines the allowed transitions; cancellation restores
+  stock and coupon usage exactly once.
+- **Payment truth.** An order becomes `paid` only after signature verification or a verified
+  webhook, and webhook events are deduplicated by provider event id.
+- **Money** is integer paise everywhere; formatting happens in the UI only.
+
+## Findings and how they were addressed
+
+| Finding | Severity | Resolution |
+| --- | --- | --- |
+| Next 15.5 unsupported by the deploy adapter | Critical | Upgraded to Next 16.4.6 / React 19.2 and re-ran every check |
+| Fresh deployment had no schema (no shell access to D1) | High | Opt-in, idempotent bootstrap (`BOOTSTRAP_DB=1`) that applies migrations as one batch, seeds the catalogue, and records `schema_version` |
+| D1 `exec()` rejects comment blocks and `PRAGMA` | High | Schema is split into statements and applied with `db.batch()` |
+| Duplicated catalogue data between seed script and runtime | Medium | Single source `web/src/lib/seed-data.json`, consumed by both |
+| Missing device-token table/endpoint for push | Medium | Added migration `0002` and `/api/v1/devices` |
+| Payment hand-off page for the native app was referenced but absent | High | Added `/pay/[number]`, reading the session token from the URL fragment |
+| Onboarding never triggered | Medium | First-launch redirect from the tab home |
+
+## Configuration and secrets
+
+- `.env.example` documents every variable; `.env.local` (gitignored) holds development values.
+- Payment secrets are read only through `lib/config.ts` on the server; no `NEXT_PUBLIC_*` payment
+  variable exists.
+- `PAYMENT_PROVIDER=test` is refused when `NODE_ENV=production`, so a fake success cannot occur in
+  production even if the flag is set.
+- Workers secrets are managed in the Sites panel, never in the repository.
+
+## Deployment configuration
+
+- `web/wrangler.jsonc` — local/worker config with the `DB` D1 binding.
+- `web/freebuff.wrangler.jsonc` — generated by the platform; used by `next dev` for local D1 and by
+  the deployment bundle.
+- `web/freebuff-sites-build/manifest.json` — deployment manifest (Worker + assets).
+- Compatibility date `2026-10-01`, `nodejs_compat` enabled.
