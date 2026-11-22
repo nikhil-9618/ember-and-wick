@@ -1,0 +1,39 @@
+{
+  "name": "ember-wick-web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Ember & Wick - D2C candle storefront, admin dashboard and shared API",
+  "scripts": {
+    "dev": "next dev -H 0.0.0.0 -p 3000",
+    "build": "next build",
+    "start": "next start -H 0.0.0.0 -p 3000",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "cf:build": "opennextjs-cloudflare build --skipBuild",
+    "db:reset:local": "wrangler d1 execute DB --local --config freebuff.wrangler.jsonc --file=migrations/0001_init.sql && node scripts/seed.mjs",
+    "db:migrate:local": "wrangler d1 execute DB --local --config freebuff.wrangler.jsonc --file=migrations/0001_init.sql",
+    "db:seed:local": "node scripts/seed.mjs",
+    "db:migrate:remote": "wrangler d1 execute DB --remote --config freebuff.wrangler.jsonc --file=migrations/0001_init.sql"
+  },
+  "dependencies": {
+    "next": "^16.4.6",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@opennextjs/cloudflare": "1.20.12",
+    "@tailwindcss/postcss": "4.1.16",
+    "@types/node": "22.18.13",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "tailwindcss": "4.1.16",
+    "typescript": "5.9.3",
+    "vitest": "3.2.4",
+    "wrangler": "4.148.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
