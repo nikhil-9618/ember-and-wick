@@ -1,8 +1,9 @@
 # Project Audit — Ember & Wick
 
-Audit date: 22 November 2026. Repository started empty apart from the cloud project scaffold, so
-this audit records the architecture that was built and the gaps that remain, rather than an
-inventory of pre-existing third-party code.
+Audit date: 22 November 2026, extended 23 November 2026 against the 50-section master prompt.
+Repository started empty apart from the cloud project scaffold, so this audit records the
+architecture that was built and the gaps that remain, rather than an inventory of pre-existing
+third-party code.
 
 ## Repository layout
 
@@ -83,3 +84,56 @@ There is exactly one implementation of pricing, discounts, stock and order state
   the deployment bundle.
 - `web/freebuff-sites-build/manifest.json` — deployment manifest (Worker + assets).
 - Compatibility date `2026-10-01`, `nodejs_compat` enabled.
+
+## Audit against the 50-section master prompt
+
+Second pass, 23 November 2026, performed read-only against the master specification
+(`D2C_Candle_MERN_Admin_50_Page_Master_Prompt.docx`). The audit set required by §06 is now complete:
+
+| Deliverable | File | Contents |
+| --- | --- | --- |
+| Repository audit | `PROJECT_AUDIT.md` | This file: layout, stack, shared logic, configuration, deployment |
+| Feature matrix | `FEATURE_MATRIX.md` | All 50 sections with status (`Existing` / `Repair` / `New` / `Future` / `Out of scope`), evidence and gap |
+| Route map | `ROUTE_MAP.md` | 29 pages + 37 API handlers with access level and file |
+| API inventory | `API_INVENTORY.md` | Endpoint-level reference |
+| Data model map | `DATA_MODEL_MAP.md` | Tables, CHECK invariants, indexes, missing collections, migrations |
+| Security findings | `SECURITY_FINDINGS.md` | Auth, payments, injection, CSRF, residual risks |
+| Bug register | `BUG_REGISTER.md` | Fixed and open defects |
+| Release plan | `RELEASE_PLAN.md` | Critical path, gates, rollback |
+
+Supporting definition: `ANALYTICS_DEFINITIONS.md` (metric formulas and exclusions, required by §12).
+
+### Headline finding
+
+The system is a working **D2C storefront with a seven-screen admin dashboard**, not yet the
+25-area **administration platform** the prompt describes. Measured against the 50 sections:
+
+| Status | Count | Where |
+| --- | --- | --- |
+| Existing | 7 | §02, §04, §06, §22, §23, §42, §45 |
+| Repair | 32 | Mostly admin depth: filters, pagination, history, refund approval, shipping, settings |
+| New | 9 | §10 staff/RBAC, §18 batches, §19 stock ledger, §28 data rights, §30 CMS, §32 campaigns, §34 support tickets, §36 finance, §39 audit log |
+| Future | 1 | §33 abandoned carts |
+| Out of scope | 1 | §01 (process instruction) |
+
+The customer journey is the strong half: server-priced checkout, atomic stock and coupon accounting,
+verified payments and idempotent webhooks are implemented and tested. The weak half is operational
+accountability — **no RBAC beyond admin/customer, no audit log, no order status history, and no stock
+movement ledger**, so the prompt's questions "who changed this, why, and what did stock do" cannot
+currently be answered.
+
+### Duplicate logic and dead code found in this pass
+
+| Item | Location | Assessment |
+| --- | --- | --- |
+| `settings` table | `0001_init.sql` | Defined, never read or written. Reserved for §38, not a bug |
+| `adminOrderPatchSchema.note` | `web/src/lib/validation.ts` | Accepted by the schema but never persisted — an order note field is validated and discarded |
+| `contact_messages` | `0001_init.sql` | Written by the contact form, never readable in admin — the closest thing to a support queue, and unreachable |
+| `OrderView.canCancel` | `web/src/lib/services/orders.ts` | Admin screens receive customer-scoped action flags that the admin UI does not use |
+| Per-page table markup | `web/src/app/admin/**` | Filter/table/empty-state markup duplicated per page instead of a shared `DataTable` (§08) |
+
+### Unresolved owner decisions
+
+Listed in full in `FEATURE_MATRIX.md` Part D. The three that gate the most work: confirm the
+Next.js/D1 runtime deviation from Express/MongoDB (§05); decide the real staff role split (§10); and
+choose a media upload provider (§15).

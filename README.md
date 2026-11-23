@@ -62,15 +62,18 @@ Current status: 50 unit tests, 59 API assertions and both typechecks pass. See `
 
 | File | Contents |
 | --- | --- |
-| `PROJECT_AUDIT.md` | Architecture, stack, findings |
-| `FEATURE_STATUS.md` | Feature-by-feature state with evidence |
+| `PROJECT_AUDIT.md` | Architecture, stack, findings, audit against the 50-section master prompt |
+| `FEATURE_MATRIX.md` | All 50 sections: status, evidence file/route/test, and the gap |
+| `ROUTE_MAP.md` | Every page and API handler with access level |
 | `API_INVENTORY.md` | Every endpoint, auth level, purpose |
 | `API_DOCUMENTATION.md` | Request/response contracts for the core journey |
-| `BUG_TRACKER.md` | Bugs found and fixed, plus open items |
-| `RELEASE_ROADMAP.md` | Critical path to launch |
+| `DATA_MODEL_MAP.md` | Tables, CHECK invariants, indexes, missing collections, migrations |
+| `ANALYTICS_DEFINITIONS.md` | Metric formulas, exclusions and known imprecision |
+| `BUG_REGISTER.md` | Bugs found and fixed, plus open items |
+| `RELEASE_PLAN.md` | Critical path to launch, gates, rollback |
 | `DEPLOYMENT.md` | Workers, D1, domain and mobile build steps |
 | `TESTING_REPORT.md` | What was run, results, what was not run |
-| `SECURITY_AUDIT.md` | Auth, payments, injection, CSRF, secrets |
+| `SECURITY_FINDINGS.md` | Auth, payments, injection, CSRF, residual risks |
 | `RELEASE_CHECKLIST.md` | Pre-launch gates |
 | `KNOWN_ISSUES.md` | Honest list of what is unfinished |
 

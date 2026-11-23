@@ -28,6 +28,27 @@ Everything below is verified to be *unfinished or unverified*. Nothing here is p
    tracking-provider sync; order tracking reflects internal statuses only.
 8. **Product images are single-resolution files.** No responsive `srcset`/CDN variants are generated.
 
+## Administration platform gaps (master prompt §03, §07–§39)
+
+The customer journey is in good shape; the operations platform is not yet the one specified. These are
+missing features, not bugs, and each is a `New` row in `FEATURE_MATRIX.md`:
+
+1. **No RBAC.** Only `customer` and `admin` exist. There are no resource-action permissions, no staff records, no
+   invitation flow, no role reassignment and no 403 test per role.
+2. **No audit log.** Nothing records who changed a price, stock level, order status, coupon or refund.
+3. **No order status history.** `orders.status` is overwritten in place, so a transition's actor and
+   reason are lost.
+4. **No stock movement ledger.** `product_variants.stock` is edited with a raw `PATCH`; there is no
+   reason, actor or reconciliation, and no reserved/available split.
+5. **No support tickets.** The contact form writes `contact_messages`, which no admin screen reads.
+6. **No store settings UI or API.** The `settings` table exists but is never read or written.
+7. **Missing admin areas:** Inventory, Stock Movements, Batches, Shipments, Returns, Payments,
+   Reports, Staff & Roles, Audit Logs, Store Settings, Content, Campaigns, Support.
+8. **Admin lists are unpaginated** (hard `LIMIT 100`, max 200) and have no date-range filters.
+9. **Refunds have no approval step**, no threshold and no unique constraint against duplicate execution.
+10. **No shipment records.** Tracking is two columns on `orders`; there are no shipment events,
+    packing slips or lost/damaged/RTO states.
+
 ## Testing gaps
 
 9. **No browser E2E suite** (Playwright) and no mobile UI tests. This pass verified the API, builds and

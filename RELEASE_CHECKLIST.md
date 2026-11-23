@@ -38,6 +38,19 @@ State as of 22 November 2026. `[x]` = done and verified. `[ ]` = outstanding.
 - [x] Admin refunds recorded
 - [x] Low-stock alerts in admin stats
 
+## Administration platform (master prompt §03, §07–§39)
+
+- [ ] Staff records, roles and resource-action permissions enforced server-side
+- [ ] 403 test per role for privileged endpoints
+- [ ] Append-only audit log for price, stock, order, coupon, refund and settings changes
+- [ ] Order status history with actor and reason
+- [ ] Stock movement ledger with reason and actor; reserved/available split
+- [ ] Refund approval threshold and duplicate-execution guard
+- [ ] Server-side pagination and date filters on every admin list
+- [ ] Support ticket queue
+- [ ] Store settings API and screen
+- [x] Admin endpoints role-checked server-side (admin vs customer only)
+
 ## Deployment
 
 - [x] Preview environment deployed on Workers + D1
@@ -78,19 +91,27 @@ State as of 22 November 2026. `[x]` = done and verified. `[ ]` = outstanding.
 
 - [x] `README.md`
 - [x] `PROJECT_AUDIT.md`
-- [x] `FEATURE_STATUS.md`
+- [x] `FEATURE_MATRIX.md` (all 50 sections with status and evidence)
+- [x] `ROUTE_MAP.md`
+- [x] `DATA_MODEL_MAP.md`
+- [x] `ANALYTICS_DEFINITIONS.md`
 - [x] `API_INVENTORY.md`
 - [x] `API_DOCUMENTATION.md`
-- [x] `BUG_TRACKER.md`
-- [x] `RELEASE_ROADMAP.md`
+- [x] `BUG_REGISTER.md`
+- [x] `RELEASE_PLAN.md`
 - [x] `DEPLOYMENT.md`
 - [x] `TESTING_REPORT.md`
-- [x] `SECURITY_AUDIT.md`
+- [x] `SECURITY_FINDINGS.md`
 - [x] `KNOWN_ISSUES.md`
 - [x] `RELEASE_CHECKLIST.md`
 
 ## Go / no-go
 
-Launch on 30 November requires the four P0 items in `RELEASE_ROADMAP.md`: a live payment rehearsal, a
-native device pass, a published production environment with a domain, and a mobile build pointed at
-production. Everything else can follow after launch.
+Launching the **storefront and mobile app** on 30 November requires the four original P0 items in
+`RELEASE_PLAN.md`: a live payment rehearsal, a native device pass, a published production environment
+with a domain, and a mobile build pointed at production.
+
+Launching the **administration platform** as specified additionally requires everything under
+"Administration platform" above to be unchecked→checked. Until then the admin is a working dashboard
+for a single trusted operator, not a multi-role operations control centre, and `KNOWN_ISSUES.md`
+should travel with it.
