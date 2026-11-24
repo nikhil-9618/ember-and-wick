@@ -7,7 +7,8 @@ Everything below is verified to be *unfinished or unverified*. Nothing here is p
 1. **Live Razorpay is untested.** The integration (server-side order creation, signature
    verification, webhook settlement, replay protection) is implemented and passes with the test
    provider and self-signed webhooks, but has never run against Razorpay with real credentials.
-   Checkout cannot complete on the current preview because no keys are configured there.
+   The public demo completes checkout with `PAYMENT_PROVIDER=demo`, which is simulated and labelled
+   as such; it is not evidence that a real payment works.
 2. **The mobile app has never been built or run.** `mobile/` typechecks with zero errors and all 18
    screens are implemented, but there is no device or simulator in this environment. Touch targets,
    deep links, keyboard handling and Android back behaviour are unverified.
@@ -21,10 +22,11 @@ Everything below is verified to be *unfinished or unverified*. Nothing here is p
    works.
 5. **Canonical URLs and the sitemap fall back to `localhost`** unless `NEXT_PUBLIC_APP_URL` is set
    before the build. The preview therefore emits localhost canonicals.
-6. **Preview has no admin account.** The bootstrap seeds the catalogue only (the second seeded admin
-   exists in local development only). To exercise the admin UI
-   on the preview, set `BOOTSTRAP_ADMIN_EMAIL`/`BOOTSTRAP_ADMIN_PASSWORD` and re-bootstrap, or use the
-   seeded local accounts.
+6. **The demo deployment has public credentials and visible sign-in codes.** The preview runs with
+   `SEED_DEMO_ACCOUNTS=1`, so admin, manager and customer accounts with documented passwords exist,
+   and with `OTP_DEMO_MODE=1` the one-time code is shown on screen because no mail provider is
+   configured. Both are demo switches: remove them, delete the demo users and add an email provider
+   before the store takes real orders.
 7. **Shipping is a flat rule, not a courier integration.** There is no live rate calculation, AWB or
    tracking-provider sync; order tracking reflects internal statuses only.
 8. **Product images are single-resolution files.** No responsive `srcset`/CDN variants are generated.

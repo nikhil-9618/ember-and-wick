@@ -1,6 +1,6 @@
 # API Inventory
 
-Base path: `/api/v1`. 41 route handlers. All responses are JSON; all money values are integer
+Base path: `/api/v1`. 42 route handlers. All responses are JSON; all money values are integer
 **paise**.
 
 Authentication: `Authorization: Bearer <token>` (mobile) or the `emberwick_session` HttpOnly cookie
@@ -20,7 +20,8 @@ Error shape: `{ "error": { "code": "…", "message": "…" } }` with codes such 
 | GET | `/products/[slug]/reviews` | Published reviews for a product |
 | GET | `/categories` | Categories with product counts |
 | POST | `/auth/register` | Create an account |
-| POST | `/auth/login` | Sign in (sets cookie, returns token) |
+| POST | `/auth/login` | Step 1: check the password and send a 6-digit code (no session yet) |
+| POST | `/auth/otp/verify` | Step 2: exchange the code for a session (sets cookie, returns token) |
 | POST | `/auth/logout` | Revoke the current session |
 | POST | `/contact` | Contact form (rate limited) |
 

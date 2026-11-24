@@ -59,7 +59,7 @@ present are listed separately at the end — they are the §07 / §40 gaps, not 
 | `/admin/reviews` | admin | `admin/reviews/page.tsx` | Pending/published/rejected moderation |
 | `/admin/audit` | admin | `admin/audit/page.tsx` | Read-only audit log of privileged changes, last 200 |
 
-## API routes (41)
+## API routes (42)
 
 ### Public and customer
 
@@ -73,7 +73,8 @@ present are listed separately at the end — they are the §07 / §40 gaps, not 
 | `GET /api/v1/categories` | public | `categories/route.ts` | Active categories |
 | `POST /api/v1/contact` | public | `contact/route.ts` | Rate limited; stores `contact_messages` |
 | `POST /api/v1/auth/register` | public | `auth/register/route.ts` | Rate limited; creates `customer` only |
-| `POST /api/v1/auth/login` | public | `auth/login/route.ts` | Rate limited; sets cookie, returns bearer token for native |
+| `POST /api/v1/auth/login` | public | `auth/login/route.ts` | Rate limited; verifies the password and sends a 6-digit code, no session |
+| `POST /api/v1/auth/otp/verify` | public | `auth/otp/verify/route.ts` | Single-use code → session cookie + bearer token |
 | `POST /api/v1/auth/logout` | user | `auth/logout/route.ts` | Revokes session, clears cookie |
 | `GET /api/v1/auth/me` | user | `auth/me/route.ts` | Current session user |
 | `POST /api/v1/auth/password` | user | `auth/password/route.ts` | Requires current password |

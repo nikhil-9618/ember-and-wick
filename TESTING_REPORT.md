@@ -9,13 +9,13 @@ preview on Cloudflare Workers.
 | --- | --- | --- |
 | TypeScript (web) | `cd web && npx tsc --noEmit` | **Pass** — 0 errors |
 | TypeScript (mobile) | `cd mobile && npx tsc --noEmit` | **Pass** — 0 errors |
-| Unit tests | `cd web && npx vitest run` | **Pass** — 57/57 in 6 files |
-| API integration | `BASE_URL=http://127.0.0.1:3000 node scripts/api-test.mjs` | **Pass** — 86/86 assertions (with `REFUND_APPROVAL_THRESHOLD_PAISE=200` locally so the approval path is reachable) |
-| Production build | `cd web && npx next build` | **Pass** — Next 16.4.6, all 29 pages + 41 routes emitted |
+| Unit tests | `cd web && npx vitest run` | **Pass** — 61/61 in 7 files |
+| API integration | `BASE_URL=http://127.0.0.1:3000 node scripts/api-test.mjs` | **Pass** — 92/92 assertions (with `REFUND_APPROVAL_THRESHOLD_PAISE=200` locally so the approval path is reachable) |
+| Production build | `cd web && npx next build` | **Pass** — Next 16.4.6, all 30 pages + 42 routes emitted |
 | Workers bundle | `sites_prepare_next` (OpenNext 1.20.12 + Wrangler) | **Pass** |
 | Deployed preview smoke | `curl` against the preview origin | **Pass** — `/`, `/shop`, `/products/cedar-smoked-vanilla`, `/api/v1/health`, `/api/v1/products` all 200 with real data |
 
-## Unit tests (57)
+## Unit tests (61)
 
 | File | Tests | Covers |
 | --- | --- | --- |
@@ -25,14 +25,16 @@ preview on Cloudflare Workers.
 | `orders.test.ts` | 8 | state machine transitions, cancelled/paid guards |
 | `payments/razorpay.test.ts` | 6 | order payload, HMAC signature and webhook verification |
 | `refunds.test.ts` | 7 | approval threshold parsing/boundaries, self-approval and duplicate-approval guards |
+| `otp.test.ts` | 4 | six-digit code format, salted hashing, constant-time compare, ten-minute expiry |
 
-## API integration suite (86 assertions)
+## API integration suite (92 assertions)
 
 Exercised against a live HTTP server with a real D1 database, in this order:
 
 1. **Catalogue** — list, filter, product detail, unknown slug 404, categories, reviews.
-2. **Auth** — register, duplicate email rejected, weak password rejected, login, wrong password
-   rejected, `me`, password change, logout, revoked session rejected.
+2. **Auth** — register, duplicate email rejected, weak password rejected, wrong password rejected,
+   login issues a code instead of a session, an incorrect code is rejected, the correct code issues a
+   session, a used code cannot be replayed, `me`, password change, logout, revoked session rejected.
 3. **Cart** — add, update quantity, reject quantity above stock, remove, clear.
 4. **Wishlist** — add (idempotent), list, remove.
 5. **Addresses** — create, list, update, default switching, delete.

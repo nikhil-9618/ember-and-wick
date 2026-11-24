@@ -4,7 +4,7 @@
 
 | Environment | URL | State |
 | --- | --- | --- |
-| Preview | https://ember-amp-wick-bw6y8l-preview.freebuff.site | Deployed and serving (Workers + D1) |
+| Preview (public demo) | https://ember-amp-wick-bw6y8l-preview.freebuff.site | Deployed and serving (Workers + D1), demo accounts seeded, simulated payments |
 | Production | not published | Requires owner approval and real keys |
 
 Deployments are made with the Sites tooling (`sites_prepare_next` → `sites_deploy`), which builds the
@@ -36,7 +36,12 @@ Set these in the Sites panel (Preview and Production separately), never in the r
 | `RAZORPAY_KEY_ID` | yes (live) | Razorpay key id; also used by the browser modal |
 | `RAZORPAY_KEY_SECRET` | yes (live) | Server-side signing; never exposed |
 | `RAZORPAY_WEBHOOK_SECRET` | yes | Webhook HMAC verification |
-| `PAYMENT_PROVIDER` | no | `test` only outside production; omit in production |
+| `PAYMENT_PROVIDER` | no | `test` outside production; `demo` for a public demo store (needs `ALLOW_DEMO_PAYMENTS=1`). Omit in a real store |
+| `ALLOW_DEMO_PAYMENTS` | demo only | `1` enables `PAYMENT_PROVIDER=demo`: checkout and refunds are simulated and labelled as such |
+| `OTP_DEMO_MODE` | demo only | `1` shows the sign-in code on screen instead of emailing it |
+| `SEED_DEMO_ACCOUNTS` | demo only | `1` creates the demo admin/manager/customer accounts on the first request |
+| `RESEND_API_KEY` or `BREVO_API_KEY` | live sign-in | Free-tier email delivery for sign-in codes; without one, sign-in returns 503 |
+| `OTP_FROM_EMAIL` | with Brevo | Verified sender address (Resend defaults to `onboarding@resend.dev`) |
 | `BOOTSTRAP_DB` | first deploy only | `1` applies migrations + catalogue to an empty database |
 | `BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD` | first deploy only | Creates the first admin when bootstrapping |
 | `NEXT_PUBLIC_APP_URL` / `APP_ORIGIN` | yes | Canonical URLs, sitemap, absolute links (build/runtime) |
@@ -59,7 +64,32 @@ npx wrangler d1 execute DB --remote --config freebuff.wrangler.jsonc --file=migr
 ```
 
 The preview database was bootstrapped this way and contains the six catalogue products, four
-categories and two coupons. It deliberately has **no demo accounts** and no payment keys.
+categories and two coupons. On the public demo deployment it also holds the demo accounts below.
+
+### Demo deployment (preview)
+
+Sign-in is password + emailed one-time code. The demo has no mail provider configured, so it runs
+with `OTP_DEMO_MODE=1` and shows the code on the sign-in screen. Payments run with
+`PAYMENT_PROVIDER=demo` + `ALLOW_DEMO_PAYMENTS=1`: checkout, order placement, cancellation, refunds
+and the refund approval threshold all work end to end, but no money is collected and every screen
+says so.
+
+| Role | Email | Password |
+| --- | --- | --- |
+| Admin | `admin@emberandwick.in` | `AdminPass123!` |
+| Second admin (approves refunds at/above the threshold) | `manager@emberandwick.in` | `ManagerPass123!` |
+| Customer | `customer@example.com` | `Customer123!` |
+
+These accounts exist only because `SEED_DEMO_ACCOUNTS=1` is set. Remove that variable (and the
+accounts) before the store takes real orders.
+
+### Going live
+
+1. Add `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` and `RAZORPAY_WEBHOOK_SECRET`, and unset
+   `PAYMENT_PROVIDER`, `ALLOW_DEMO_PAYMENTS`, `OTP_DEMO_MODE` and `SEED_DEMO_ACCOUNTS`.
+2. Add `RESEND_API_KEY` or `BREVO_API_KEY` (+ `OTP_FROM_EMAIL`) so sign-in codes are emailed.
+3. Delete the demo users and rotate `BOOTSTRAP_ADMIN_PASSWORD`.
+4. Point the Razorpay webhook at `https://<domain>/api/v1/payments/webhook`.
 
 ### Verification after deploy
 
