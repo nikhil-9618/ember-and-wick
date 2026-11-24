@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { api, errorMessage } from "@/lib/client/api";
 
-export function RefundForm({ mode }: { mode: "razorpay" | "test" | "unconfigured" }) {
+export function RefundForm({ mode }: { mode: "razorpay" | "test" | "demo" | "unconfigured" }) {
   const router = useRouter();
   const [form, setForm] = useState({ orderId: "", amount: "", reason: "" });
   const [busy, setBusy] = useState(false);
@@ -38,8 +38,10 @@ export function RefundForm({ mode }: { mode: "razorpay" | "test" | "unconfigured
   return (
     <form onSubmit={submit} className="h-fit border border-line p-4">
       <h2 className="text-lg">Issue a refund</h2>
-      {mode === "test" ? (
-        <p className="mt-1 text-xs text-sage">Test mode: refunds complete instantly and take no real money.</p>
+      {mode === "test" || mode === "demo" ? (
+        <p className="mt-1 text-xs text-sage">
+          Simulated payments: refunds complete instantly and take no real money.
+        </p>
       ) : null}
 
       <label className="mt-3 block">

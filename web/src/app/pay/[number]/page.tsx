@@ -83,7 +83,7 @@ export default function PayPage() {
         { method: "POST" },
       );
 
-      if (payment.provider === "test") {
+      if (payment.provider === "test" || payment.provider === "demo") {
         await withToken(`/api/v1/payments/test-confirm`, { method: "POST", body: { orderNumber } });
         setStatus("paid");
         return;

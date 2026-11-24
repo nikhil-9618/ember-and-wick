@@ -1,5 +1,5 @@
 export interface PaymentIntentView {
-  provider: "razorpay" | "test";
+  provider: "razorpay" | "test" | "demo";
   keyId: string | null;
   providerOrderId: string;
   amount: number;

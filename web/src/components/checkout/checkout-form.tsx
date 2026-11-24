@@ -30,7 +30,7 @@ interface Totals {
 
 interface OrderResponse {
   order: { id: string; number: string; total: number; status: string };
-  payment: { provider: "razorpay" | "test"; keyId: string | null; providerOrderId: string; amount: number; currency: string };
+  payment: { provider: "razorpay" | "test" | "demo"; keyId: string | null; providerOrderId: string; amount: number; currency: string };
 }
 
 interface Props {
@@ -38,7 +38,7 @@ interface Props {
   initialTotals: Totals;
   itemCount: number;
   email: string;
-  paymentMode: "razorpay" | "test" | "unconfigured";
+  paymentMode: "razorpay" | "test" | "demo" | "unconfigured";
 }
 
 const EMPTY_ADDRESS = {
@@ -246,6 +246,11 @@ export function CheckoutForm({ addresses, initialTotals, itemCount, email, payme
             <p className="mt-4 border border-sage/50 bg-sage/10 px-4 py-3 text-sm text-ink">
               <strong>Test mode.</strong> No real payment will be taken. Use the test button to confirm the order.
             </p>
+          ) : paymentMode === "demo" ? (
+            <p className="mt-4 border border-sage/50 bg-sage/10 px-4 py-3 text-sm text-ink">
+              <strong>Demo store.</strong> No money is taken and no card details are requested. Place the order, then
+              confirm the simulated payment to see the full flow.
+            </p>
           ) : null}
 
           {addresses.length > 0 ? (
@@ -414,14 +419,14 @@ export function CheckoutForm({ addresses, initialTotals, itemCount, email, payme
           </p>
         ) : null}
 
-        {pendingOrder && createdPayment?.provider === "test" ? (
+        {pendingOrder && createdPayment && createdPayment.provider !== "razorpay" ? (
           <button
             type="button"
             onClick={completeTestPayment}
             disabled={busy}
             className="mt-5 w-full bg-sage px-6 py-3.5 text-sm font-medium text-ivory hover:opacity-90 disabled:opacity-50"
           >
-            {busy ? "Confirming…" : "Complete test payment (no money taken)"}
+            {busy ? "Confirming…" : "Complete simulated payment (no money taken)"}
           </button>
         ) : (
           <button
@@ -434,7 +439,9 @@ export function CheckoutForm({ addresses, initialTotals, itemCount, email, payme
         )}
 
         <p className="mt-3 text-center text-xs text-ink-soft">
-          Secure payment by Razorpay · UPI, cards, netbanking
+          {paymentMode === "demo"
+            ? "Demo checkout · simulated payment only"
+            : "Secure payment by Razorpay · UPI, cards, netbanking"}
         </p>
         <p className="mt-2 text-center text-xs text-ink-soft">
           <Link href="/refund-policy" className="underline underline-offset-4">

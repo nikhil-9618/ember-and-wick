@@ -26,7 +26,7 @@ export function OrderActions({ orderNumber, canCancel, canRetryPayment, email }:
         { method: "POST" },
       );
 
-      if (payment.provider === "test") {
+      if (payment.provider === "test" || payment.provider === "demo") {
         await api("/api/v1/payments/test-confirm", { method: "POST", body: { orderNumber } });
         router.refresh();
         return;

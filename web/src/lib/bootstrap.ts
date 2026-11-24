@@ -25,6 +25,11 @@ export function ensureDatabaseReady(db: D1Database): Promise<void> {
 }
 
 async function run(db: D1Database): Promise<void> {
+  await applyMigrations(db);
+  await seedDemoAccounts(db);
+}
+
+async function applyMigrations(db: D1Database): Promise<void> {
   const enabled = (process.env.BOOTSTRAP_DB ?? "") === "1";
   if (!enabled) return;
 
@@ -129,4 +134,71 @@ async function run(db: D1Database): Promise<void> {
     .prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', ?)")
     .bind(SCHEMA_VERSION)
     .run();
+}
+
+/**
+ * Optional demonstration accounts for a hosted demo build.
+ *
+ * Off unless SEED_DEMO_ACCOUNTS=1, so a real store never gains a known-password
+ * login by accident. Existing rows are left untouched, so a rotated password is
+ * not reset on the next deploy.
+ */
+const DEMO_ACCOUNTS = [
+  {
+    id: "usr_admin",
+    email: "admin@emberandwick.in",
+    name: "Studio Admin",
+    phone: "+91 80 4718 2200",
+    role: "admin",
+    passwordEnv: "DEMO_ADMIN_PASSWORD",
+    fallbackPassword: "AdminPass123!",
+  },
+  {
+    id: "usr_manager",
+    email: "manager@emberandwick.in",
+    name: "Studio Manager",
+    phone: "+91 80 4718 2201",
+    role: "admin",
+    passwordEnv: "DEMO_MANAGER_PASSWORD",
+    fallbackPassword: "ManagerPass123!",
+  },
+  {
+    id: "usr_demo",
+    email: "customer@example.com",
+    name: "Aarav Menon",
+    phone: "+91 98450 11223",
+    role: "customer",
+    passwordEnv: "DEMO_CUSTOMER_PASSWORD",
+    fallbackPassword: "Customer123!",
+  },
+] as const;
+
+async function seedDemoAccounts(db: D1Database): Promise<void> {
+  if ((process.env.SEED_DEMO_ACCOUNTS ?? "") !== "1") return;
+
+  // Only seed into a database whose schema has already been applied.
+  const schema = await db
+    .prepare("SELECT value FROM settings WHERE key = 'schema_version'")
+    .first<{ value: string }>()
+    .catch(() => null);
+  if (!schema?.value) return;
+
+  const existing = await db
+    .prepare("SELECT id FROM users WHERE id IN ('usr_admin', 'usr_manager', 'usr_demo')")
+    .all<{ id: string }>();
+  const present = new Set((existing.results ?? []).map((row) => row.id));
+  const now = new Date().toISOString();
+
+  for (const account of DEMO_ACCOUNTS) {
+    if (present.has(account.id)) continue;
+    const password = process.env[account.passwordEnv] ?? account.fallbackPassword;
+    const hash = await hashPassword(password);
+    await db
+      .prepare(
+        `INSERT OR IGNORE INTO users (id, email, password_hash, name, phone, role, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(account.id, account.email, hash, account.name, account.phone, account.role, now, now)
+      .run();
+  }
 }

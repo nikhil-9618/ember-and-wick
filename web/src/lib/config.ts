@@ -1,7 +1,7 @@
 import { getEnv } from "./db";
 import { refundApprovalThreshold } from "./refunds";
 
-export type PaymentMode = "razorpay" | "test" | "unconfigured";
+export type PaymentMode = "razorpay" | "test" | "demo" | "unconfigured";
 
 export interface PaymentConfig {
   mode: PaymentMode;
@@ -21,6 +21,10 @@ function readEnv(env: Record<string, string | undefined>, name: string): string 
  *
  * `test` mode exists for automated tests and local demos. It is refused whenever
  * NODE_ENV is production, so a fake success can never be produced in production.
+ *
+ * `demo` mode is the explicitly opted-in production flavour for a public demo
+ * store: it needs both PAYMENT_PROVIDER=demo and ALLOW_DEMO_PAYMENTS=1, and the
+ * interface labels every demo payment as such. Real money is never collected.
  */
 export async function getPaymentConfig(): Promise<PaymentConfig> {
   const env = await getEnv();
@@ -34,6 +38,9 @@ export async function getPaymentConfig(): Promise<PaymentConfig> {
     // The webhook secret is independent of the payment mode: keeping it lets the
     // test suite verify real HMAC signature handling and replay protection.
     return { mode: "test", keyId: null, keySecret: null, webhookSecret };
+  }
+  if (requested === "demo" && readEnv(env, "ALLOW_DEMO_PAYMENTS") === "1") {
+    return { mode: "demo", keyId: null, keySecret: null, webhookSecret };
   }
   if (keyId && keySecret) {
     return { mode: "razorpay", keyId, keySecret, webhookSecret };

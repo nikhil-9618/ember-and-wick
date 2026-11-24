@@ -93,8 +93,8 @@ export async function executeRefund(input: {
         keySecret: config.keySecret!,
       });
       providerRefundId = providerRefund.id;
-    } else if (config.mode === "test") {
-      providerRefundId = `test_refund_${refund.id}`;
+    } else if (config.mode === "test" || config.mode === "demo") {
+      providerRefundId = `${config.mode}_refund_${refund.id}`;
     } else {
       throw new ApiError("payment_not_configured", "Payments are not configured, so refunds cannot be processed.", 503);
     }
@@ -117,7 +117,7 @@ export async function executeRefund(input: {
 
   const alreadyRefunded = await reservedRefundTotal(refund.order.id, refund.id);
   const fullyRefunded = alreadyRefunded + refund.amount >= refund.order.total;
-  const completedNow = config.mode === "test";
+  const completedNow = config.mode === "test" || config.mode === "demo";
   const doneAt = new Date().toISOString();
 
   const statements: D1PreparedStatement[] = [
