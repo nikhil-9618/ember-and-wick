@@ -11,6 +11,7 @@ const LINKS = [
   { href: "/admin/coupons", label: "Coupons" },
   { href: "/admin/refunds", label: "Refunds" },
   { href: "/admin/reviews", label: "Reviews" },
+  { href: "/admin/audit", label: "Audit log" },
 ];
 
 export const dynamic = "force-dynamic";

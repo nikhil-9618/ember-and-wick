@@ -9,6 +9,7 @@ import {
 } from "../payments/razorpay";
 import { releaseOrder } from "./checkout";
 import { notificationStatement } from "./notify";
+import { statusHistoryStatement, SYSTEM_ACTOR, type StatusActor } from "../history";
 import type { D1PreparedStatement } from "../types-d1";
 
 interface OrderRow {
@@ -44,6 +45,7 @@ async function loadOrderById(id: string): Promise<OrderRow | null> {
 export async function markOrderPaid(
   orderId: string,
   payment: { providerPaymentId: string | null; method?: string | null },
+  actor: StatusActor = SYSTEM_ACTOR,
 ): Promise<{ changed: boolean }> {
   const db = await getDb();
   const order = await loadOrderById(orderId);
@@ -79,6 +81,17 @@ export async function markOrderPaid(
     );
   }
 
+  statements.push(
+    statusHistoryStatement(db, {
+      orderId,
+      fromStatus: order.status,
+      toStatus: "paid",
+      actor,
+      reason: "Payment captured",
+      at: now,
+    }),
+  );
+
   if (order.user_id) {
     statements.push(
       notificationStatement(db, {
@@ -108,6 +121,7 @@ export async function markOrderPaid(
 export async function markPaymentFailed(
   orderId: string,
   detail: { code?: string | null; description?: string | null },
+  actor: StatusActor = SYSTEM_ACTOR,
 ): Promise<void> {
   const db = await getDb();
   const order = await loadOrderById(orderId);
@@ -124,6 +138,14 @@ export async function markPaymentFailed(
         "UPDATE payments SET status = 'failed', error_code = ?, error_description = ?, updated_at = ? WHERE order_id = ? AND status = 'created'",
       )
       .bind(detail.code ?? null, detail.description ?? null, now, orderId),
+    statusHistoryStatement(db, {
+      orderId,
+      fromStatus: order.status,
+      toStatus: "payment_failed",
+      actor,
+      reason: detail.description ? detail.description.slice(0, 300) : "Payment failed",
+      at: now,
+    }),
   ]);
 }
 
@@ -167,7 +189,11 @@ export async function confirmPayment(input: {
     throw new ApiError("payment_error", "Payment signature verification failed. Nothing was confirmed.", 400);
   }
 
-  const result = await markOrderPaid(order.id, { providerPaymentId: input.providerPaymentId });
+  const result = await markOrderPaid(order.id, { providerPaymentId: input.providerPaymentId }, {
+    type: "customer",
+    id: input.userId,
+    label: order.email,
+  });
   return { orderNumber: order.number, status: "paid", alreadyProcessed: !result.changed };
 }
 
@@ -191,19 +217,35 @@ export async function retryPaymentIntent(
   const db = await getDb();
   const now = new Date().toISOString();
 
+  const retryStatements = [
+    db
+      .prepare("UPDATE orders SET status = 'pending_payment', payment_status = 'unpaid', updated_at = ? WHERE id = ?")
+      .bind(now, order.id),
+    ...(order.status === "pending_payment"
+      ? []
+      : [
+          statusHistoryStatement(db, {
+            orderId: order.id,
+            fromStatus: order.status,
+            toStatus: "pending_payment",
+            actor: { type: "customer", id: userId, label: order.email },
+            reason: "Payment retried",
+            at: now,
+          }),
+        ]),
+  ];
+
   if (config.mode === "test") {
     const providerOrderId = `test_${order.id}_${randomId("rt").slice(-6)}`;
-    await db
-      .prepare(
-        `INSERT INTO payments (id, order_id, provider, provider_order_id, amount, currency, status, created_at, updated_at)
-         VALUES (?, ?, 'test', ?, ?, 'INR', 'created', ?, ?)`,
-      )
-      .bind(randomId("pay"), order.id, providerOrderId, order.total, now, now)
-      .run();
-    await db
-      .prepare("UPDATE orders SET status = 'pending_payment', payment_status = 'unpaid', updated_at = ? WHERE id = ?")
-      .bind(now, order.id)
-      .run();
+    await db.batch([
+      db
+        .prepare(
+          `INSERT INTO payments (id, order_id, provider, provider_order_id, amount, currency, status, created_at, updated_at)
+           VALUES (?, ?, 'test', ?, ?, 'INR', 'created', ?, ?)`,
+        )
+        .bind(randomId("pay"), order.id, providerOrderId, order.total, now, now),
+      ...retryStatements,
+    ]);
     return { provider: "test", keyId: null, providerOrderId, amount: order.total, currency: "INR" };
   }
 
@@ -222,9 +264,7 @@ export async function retryPaymentIntent(
          VALUES (?, ?, 'razorpay', ?, ?, 'INR', 'created', ?, ?)`,
       )
       .bind(randomId("pay"), order.id, rzp.id, order.total, now, now),
-    db
-      .prepare("UPDATE orders SET status = 'pending_payment', payment_status = 'unpaid', updated_at = ? WHERE id = ?")
-      .bind(now, order.id),
+    ...retryStatements,
   ]);
   return { provider: "razorpay", keyId: config.keyId, providerOrderId: rzp.id, amount: order.total, currency: "INR" };
 }
@@ -237,7 +277,11 @@ export async function confirmTestPayment(userId: string, orderNumber: string): P
   }
   const order = await loadOrderByNumber(orderNumber);
   if (!order || order.user_id !== userId) throw notFound("Order not found.");
-  await markOrderPaid(order.id, { providerPaymentId: `test_payment_${order.id}`, method: "test" });
+  await markOrderPaid(
+    order.id,
+    { providerPaymentId: `test_payment_${order.id}`, method: "test" },
+    { type: "customer", id: userId, label: order.email },
+  );
 }
 
 export interface WebhookOutcome {
@@ -307,10 +351,11 @@ export async function handleRazorpayWebhook(
         [payment.order_id],
       );
       if (row) {
-        const result = await markOrderPaid(row.order_id, {
-          providerPaymentId: payment.id ?? null,
-          method: payment.method ?? null,
-        });
+        const result = await markOrderPaid(
+          row.order_id,
+          { providerPaymentId: payment.id ?? null, method: payment.method ?? null },
+          { type: "webhook", label: "Razorpay webhook" },
+        );
         outcome = result.changed ? "order_marked_paid" : "already_paid";
       }
     } else if (payment?.order_id && eventType === "payment.failed") {
@@ -319,10 +364,11 @@ export async function handleRazorpayWebhook(
         [payment.order_id],
       );
       if (row) {
-        await markPaymentFailed(row.order_id, {
-          code: payment.error_code ?? null,
-          description: payment.error_description ?? null,
-        });
+        await markPaymentFailed(
+          row.order_id,
+          { code: payment.error_code ?? null, description: payment.error_description ?? null },
+          { type: "webhook", label: "Razorpay webhook" },
+        );
         outcome = "payment_marked_failed";
       }
     } else if (eventType.startsWith("refund.") && event.payload?.refund?.entity?.id) {

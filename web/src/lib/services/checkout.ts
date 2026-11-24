@@ -3,6 +3,8 @@ import { getDb } from "../db";
 import { ApiError, badRequest, conflict, notFound, outOfStock } from "../errors";
 import { computeCouponDiscount, computeTotals, type Totals } from "../money";
 import { decrementStockStatements, newId, orderNumber } from "../orders";
+import { statusHistoryStatement, SYSTEM_ACTOR, type StatusActor } from "../history";
+import { inventoryMovementStatement } from "./inventory";
 import { findCoupon, getCart, type CartLine, type CouponRow } from "./cart";
 import { getPaymentConfig } from "../config";
 import { createRazorpayOrder } from "../payments/razorpay";
@@ -247,6 +249,27 @@ export async function createOrder(
     orderInsert,
     ...itemStatements,
     db.prepare("DELETE FROM cart_items WHERE cart_id = ?").bind(cart.cartId),
+    // History and ledger rows commit in the same batch as the order itself, so a
+    // rolled-back order can never leave a status change or stock movement behind.
+    statusHistoryStatement(db, {
+      orderId,
+      fromStatus: null,
+      toStatus: "pending_payment",
+      actor: { type: "customer", id: userId, label: email },
+      reason: "Order placed",
+      at: now,
+    }),
+    ...lines.map((line) =>
+      inventoryMovementStatement(db, {
+        variantId: line.variantId,
+        delta: -line.quantity,
+        reason: "order_reserved",
+        referenceType: "order",
+        referenceId: orderId,
+        actor: { type: "customer", id: userId },
+        at: now,
+      }),
+    ),
   ];
   if (coupon) {
     // The CHECK (used_count <= usage_limit) constraint aborts this transaction if
@@ -320,7 +343,10 @@ export async function createOrder(
     };
   } catch {
     // Payment could not even be started, so the reservation is released fully.
-    await releaseOrder(orderId, "cancelled");
+    await releaseOrder(orderId, "cancelled", {
+      actor: { type: "system", label: "Payment gateway" },
+      reason: "Payment could not be started",
+    });
     throw new ApiError(
       "payment_error",
       "We couldn't start the payment. Your card has not been charged and your items have been released.",
@@ -335,14 +361,20 @@ export async function createOrder(
  * not be started at all. A merely *failed* payment keeps its reservation so the
  * customer can retry from the order page without losing the item.
  */
-export async function releaseOrder(orderId: string, nextStatus: "cancelled"): Promise<void> {
+export async function releaseOrder(
+  orderId: string,
+  nextStatus: "cancelled",
+  options: { actor?: StatusActor; reason?: string | null } = {},
+): Promise<void> {
   const db = await getDb();
   const order = await db
     .prepare("SELECT id, status, coupon_code FROM orders WHERE id = ?")
     .bind(orderId)
     .first<{ id: string; status: string; coupon_code: string | null }>();
   if (!order) throw notFound("Order not found.");
-  if (order.status === "cancelled" || order.status === "payment_failed") return;
+  // Only an already-cancelled order is a no-op. A failed payment still holds its
+  // reservation, so cancelling it must release stock exactly once.
+  if (order.status === "cancelled") return;
 
   const items = await db
     .prepare("SELECT variant_id, quantity FROM order_items WHERE order_id = ?")
@@ -350,14 +382,34 @@ export async function releaseOrder(orderId: string, nextStatus: "cancelled"): Pr
     .all<{ variant_id: string; quantity: number }>();
 
   const now = new Date().toISOString();
+  const actor = options.actor ?? SYSTEM_ACTOR;
   const statements: D1PreparedStatement[] = [
     ...(items.results ?? []).map((item) =>
       db.prepare("UPDATE product_variants SET stock = stock + ? WHERE id = ?").bind(item.quantity, item.variant_id),
+    ),
+    ...(items.results ?? []).map((item) =>
+      inventoryMovementStatement(db, {
+        variantId: item.variant_id,
+        delta: item.quantity,
+        reason: "order_released",
+        referenceType: "order",
+        referenceId: orderId,
+        actor: { type: actor.type === "webhook" ? "system" : actor.type, id: actor.id ?? null },
+        at: now,
+      }),
     ),
     db
       .prepare("UPDATE orders SET status = ?, payment_status = ?, cancelled_at = ?, updated_at = ? WHERE id = ?")
       .bind(nextStatus, nextStatus === "cancelled" ? "unpaid" : "failed", now, now, orderId),
     db.prepare("UPDATE payments SET status = 'failed', updated_at = ? WHERE order_id = ? AND status = 'created'").bind(now, orderId),
+    statusHistoryStatement(db, {
+      orderId,
+      fromStatus: order.status,
+      toStatus: nextStatus,
+      actor,
+      reason: options.reason ?? "Order cancelled",
+      at: now,
+    }),
   ];
   if (order.coupon_code) {
     statements.push(

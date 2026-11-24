@@ -111,6 +111,29 @@ export default async function AdminOrderPage({ params }: { params: Promise<{ num
             </section>
           ) : null}
 
+          <section>
+            <h2 className="text-lg">Status history</h2>
+            {order.statusHistory.length === 0 ? (
+              <p className="mt-2 text-sm text-ink-soft">No status changes recorded for this order.</p>
+            ) : (
+              <ol className="mt-2 space-y-2 border-l border-line pl-4 text-sm">
+                {order.statusHistory.map((entry) => (
+                  <li key={entry.id}>
+                    <p>
+                      {entry.fromStatus ? `${ORDER_STATUS_LABELS[entry.fromStatus as keyof typeof ORDER_STATUS_LABELS] ?? entry.fromStatus} → ` : ""}
+                      {ORDER_STATUS_LABELS[entry.toStatus as keyof typeof ORDER_STATUS_LABELS] ?? entry.toStatus}
+                    </p>
+                    <p className="text-xs text-ink-soft">
+                      {new Date(entry.createdAt).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })} ·{" "}
+                      {entry.actorLabel ?? entry.actorType}
+                      {entry.reason ? ` · ${entry.reason}` : ""}
+                    </p>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </section>
+
           {order.refunds.length > 0 ? (
             <section>
               <h2 className="text-lg">Refunds</h2>

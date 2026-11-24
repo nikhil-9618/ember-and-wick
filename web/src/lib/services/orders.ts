@@ -1,5 +1,6 @@
 import { allRows, firstRow, getDb } from "../db";
 import { ORDER_STATUS_LABELS, type OrderStatus, releasesInventory } from "../orders";
+import { listStatusHistory, type StatusHistoryEntry } from "../history";
 import { releaseOrder } from "./checkout";
 
 export interface OrderItemView {
@@ -51,6 +52,7 @@ export interface OrderView {
   items: OrderItemView[];
   payment: { provider: string; status: string; providerPaymentId: string | null } | null;
   refunds: { id: string; amount: number; status: string; reason: string; createdAt: string }[];
+  statusHistory: StatusHistoryEntry[];
   canCancel: boolean;
   canRetryPayment: boolean;
 }
@@ -101,7 +103,7 @@ function parseAddress(raw: string): OrderAddress | null {
 }
 
 async function hydrateOrder(row: OrderRow): Promise<OrderView> {
-  const [items, payment, refunds] = await Promise.all([
+  const [items, payment, refunds, statusHistory] = await Promise.all([
     allRows<{
       id: string;
       product_id: string;
@@ -124,6 +126,7 @@ async function hydrateOrder(row: OrderRow): Promise<OrderView> {
       "SELECT id, amount, status, reason, created_at FROM refunds WHERE order_id = ? ORDER BY created_at DESC",
       [row.id],
     ),
+    listStatusHistory(row.id),
   ]);
 
   return {
@@ -170,6 +173,7 @@ async function hydrateOrder(row: OrderRow): Promise<OrderView> {
       reason: refund.reason,
       createdAt: refund.created_at,
     })),
+    statusHistory,
     canCancel: ["pending_payment", "payment_failed"].includes(row.status),
     canRetryPayment:
       ["pending_payment", "payment_failed"].includes(row.status) && row.payment_status !== "paid",
@@ -230,13 +234,16 @@ export async function listAllOrders(filter: { status?: string; q?: string; limit
 export async function cancelUnpaidOrder(userId: string, number: string): Promise<OrderView> {
   const db = await getDb();
   const row = await db
-    .prepare("SELECT id, status, payment_status FROM orders WHERE number = ? AND user_id = ?")
+    .prepare("SELECT id, status, payment_status, email FROM orders WHERE number = ? AND user_id = ?")
     .bind(number, userId)
-    .first<{ id: string; status: OrderStatus; payment_status: string }>();
+    .first<{ id: string; status: OrderStatus; payment_status: string; email: string }>();
   if (!row) throw new Error("not_found");
   if (row.payment_status === "paid") throw new Error("paid_order");
   if (!releasesInventory(row.status) && row.status !== "pending_payment") throw new Error("not_cancellable");
-  await releaseOrder(row.id, "cancelled");
+  await releaseOrder(row.id, "cancelled", {
+    actor: { type: "customer", id: userId, label: row.email },
+    reason: "Cancelled by the customer",
+  });
   const updated = await getOrderForUser(userId, number);
   if (!updated) throw new Error("not_found");
   return updated;
