@@ -125,7 +125,8 @@ In test mode the provider is `test` and settlement uses `POST /payments/test-con
 ## 9. Orders and tracking
 
 `GET /orders` → `{ "orders": [ { "number", "status", "paymentStatus", "total", "placedAt", "items" } ] }`
-`GET /orders/[number]` adds the full timeline, shipping address, payments and refunds.
+`GET /orders/[number]` adds the full timeline, `statusHistory` (from/to status, actor type and label,
+reason, timestamp), shipping address, payments and refunds.
 `POST /orders/[number]/cancel` is allowed before shipment and restores stock and coupon usage once.
 
 Statuses: `pending_payment` → `paid` → `processing` → `shipped` → `delivered`, with `cancelled` and
@@ -134,8 +135,16 @@ Statuses: `pending_payment` → `paid` → `processing` → `shipped` → `deliv
 ## 10. Admin examples
 
 `GET /admin/stats` → `{ "revenue": …, "orders": { "paid": …, "pending": … }, "lowStock": [ { "sku", "name", "stock" } ] }`
-`PATCH /admin/orders/[number]` `{ "status": "shipped", "trackingNumber"?: …, "carrier"?: … }`
-`POST /admin/refunds` `{ "orderNumber": "EW-2026-000123", "amount": 80910, "reason": "Damaged in transit" }`
+`PATCH /admin/orders/[number]` `{ "status": "shipped", "trackingNumber"?: …, "carrier"?: …, "note"?: … }`
+— `note` is stored as the transition reason in the order history.
+`POST /admin/refunds` `{ "orderId": "EW-261122-AB12C", "amount": 80910, "reason": "Damaged in transit", "requestKey"?: … }`
+— returns `202 { id, status: "requested", requiresApproval: true }` when the amount is at or above the
+approval threshold, otherwise `201 { id, status, providerRefundId }`. A repeated `requestKey` returns the
+original refund with `duplicate: true`.
+`POST /admin/refunds/[id]/approve` — second admin only (403 for the requester, 409 if already processed).
+`GET /admin/refunds?status=requested` — includes `approved_by_email` and `refundPolicy.approvalThresholdPaise`.
+`GET /admin/audit?entityType=order&action=order.status_changed&limit=100` — append-only admin audit log.
+`GET /admin/variants/[id]/movements` — signed stock ledger for one variant (`delta`, `reason`, `referenceId`, actor).
 
 Every admin route returns `403 forbidden` for a customer token — covered by the integration suite.
 

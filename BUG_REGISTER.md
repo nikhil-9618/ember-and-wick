@@ -15,6 +15,11 @@ Status values: Fixed · Open · Open (blocked) · Won't fix.
 | 7 | Medium | Mobile assets | Generated icon was JPEG data saved as `.png` | Converted to real PNG; splash composed on an ivory canvas |
 | 8 | Medium | Mobile deps | Expo packages were never installed, so mobile had never been typechecked | Installed; `tsc --noEmit` passes with zero errors |
 | 9 | Medium | Docs/ops | Payment secrets could be loaded from `.dev.vars`, which stops Wrangler reading `.env` | Secrets live only in `.env.local` (gitignored) and Sites secrets |
+| 10 | High | Orders | `PATCH /admin/orders/[number]` accepted a `note` and discarded it, so a status change had no recorded reason | `note` is stored as the reason on the new `order_status_history` row |
+| 11 | High | Orders | Cancelling an order whose payment had failed returned early, leaving it `payment_failed` with its stock still held | `releaseOrder` is now a no-op only for an already-`cancelled` order; failed-payment stock is released once |
+| 12 | High | Refunds | A partial refund reset a shipped/delivered order back to `paid`, and the same refund could be requested twice | Partial refunds now leave the order status untouched; `request_key` and `provider_refund_id` are UNIQUE and the approve step is a conditional status claim |
+| 13 | Medium | Migrations | New migration files were never applied to an existing database, and `db:migrate:local` only ran `0001` | Added `scripts/migrate-local.mjs` and made the runtime bootstrap apply pending migrations tracked by `settings.schema_version` |
+| 14 | Medium | Tests | The API suite was not exercising the admin refund flow, so duplicate execution was invisible | Added threshold, self-approval, approval, replay and duplicate-approval assertions (86 assertions total) |
 
 ## Open
 

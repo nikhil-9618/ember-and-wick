@@ -1,6 +1,6 @@
 # API Inventory
 
-Base path: `/api/v1`. 37 route handlers. All responses are JSON; all money values are integer
+Base path: `/api/v1`. 41 route handlers. All responses are JSON; all money values are integer
 **paise**.
 
 Authentication: `Authorization: Bearer <token>` (mobile) or the `emberwick_session` HttpOnly cookie
@@ -38,7 +38,7 @@ Error shape: `{ "error": { "code": "…", "message": "…" } }` with codes such 
 | PATCH / DELETE | `/addresses/[id]` | Update / delete address |
 | POST | `/checkout/quote` | Server-priced totals for the cart (`couponCode`) |
 | GET / POST | `/orders` | List orders / place an order (address + optional coupon, idempotency key) |
-| GET | `/orders/[number]` | Order detail with items, payments, timeline |
+| GET | `/orders/[number]` | Order detail with items, payments, status history |
 | POST | `/orders/[number]/cancel` | Cancel; restores stock and coupon usage |
 | POST | `/orders/[number]/retry-payment` | Create/reuse a payment intent for an unpaid order |
 | POST | `/payments/verify` | Verify a Razorpay signature and settle the order |
@@ -56,14 +56,17 @@ Error shape: `{ "error": { "code": "…", "message": "…" } }` with codes such 
 | GET / POST | `/admin/products` | List / create product |
 | PATCH / DELETE | `/admin/products/[id]` | Update / archive product |
 | POST | `/admin/products/[id]/variants` | Add a variant |
-| PATCH / DELETE | `/admin/variants/[id]` | Update price/stock / remove variant |
+| PATCH / DELETE | `/admin/variants/[id]` | Update price/stock (writes the stock ledger + audit) / remove variant |
+| GET | `/admin/variants/[id]/movements` | Signed stock ledger for one variant |
 | GET / PATCH | `/admin/orders` | List orders / update status |
-| GET / PATCH | `/admin/orders/[number]` | Order detail / status transition |
+| GET / PATCH | `/admin/orders/[number]` | Order detail / status transition (`note` becomes the history reason) |
 | GET | `/admin/customers` | Customer list with order counts |
 | GET / POST | `/admin/coupons` | List / create coupon |
 | PATCH / DELETE | `/admin/coupons/[id]` | Update / deactivate coupon |
-| GET / POST | `/admin/refunds` | List / record a refund |
+| GET / POST | `/admin/refunds` | List (with `refundPolicy.approvalThresholdPaise`) / request a refund; `202` when held for approval |
+| POST | `/admin/refunds/[id]/approve` | Second admin executes a held refund; `403` self-approval, `409` already processed |
 | GET / PATCH | `/admin/reviews` | Moderation queue / publish or hide |
+| GET | `/admin/audit` | Append-only audit log; `entityType`, `entityId`, `action`, `limit` |
 
 ## Notes
 

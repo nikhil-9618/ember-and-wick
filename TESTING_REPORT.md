@@ -9,23 +9,24 @@ preview on Cloudflare Workers.
 | --- | --- | --- |
 | TypeScript (web) | `cd web && npx tsc --noEmit` | **Pass** — 0 errors |
 | TypeScript (mobile) | `cd mobile && npx tsc --noEmit` | **Pass** — 0 errors |
-| Unit tests | `cd web && npx vitest run` | **Pass** — 50/50 in 5 files |
-| API integration | `BASE_URL=http://127.0.0.1:3000 node scripts/api-test.mjs` | **Pass** — 59/59 assertions |
-| Production build | `cd web && npx next build` | **Pass** — Next 16.4.6, all 29 pages + 37 routes emitted |
+| Unit tests | `cd web && npx vitest run` | **Pass** — 57/57 in 6 files |
+| API integration | `BASE_URL=http://127.0.0.1:3000 node scripts/api-test.mjs` | **Pass** — 86/86 assertions (with `REFUND_APPROVAL_THRESHOLD_PAISE=200` locally so the approval path is reachable) |
+| Production build | `cd web && npx next build` | **Pass** — Next 16.4.6, all 29 pages + 41 routes emitted |
 | Workers bundle | `sites_prepare_next` (OpenNext 1.20.12 + Wrangler) | **Pass** |
 | Deployed preview smoke | `curl` against the preview origin | **Pass** — `/`, `/shop`, `/products/cedar-smoked-vanilla`, `/api/v1/health`, `/api/v1/products` all 200 with real data |
 
-## Unit tests (50)
+## Unit tests (57)
 
 | File | Tests | Covers |
 | --- | --- | --- |
-| `money.test.ts` | 9 | paise rounding, formatting, discount maths |
+| `money.test.ts` | 14 | paise rounding, formatting, discount maths |
 | `validation.test.ts` | 16 | email/phone/pincode/quantity/coupon rules |
 | `password.test.ts` | 6 | PBKDF2 hash + verify, wrong password, malformed hash |
-| `orders.test.ts` | 11 | state machine transitions, cancelled/paid guards |
-| `config.test.ts` | 8 | payment mode resolution, test mode refused in production |
+| `orders.test.ts` | 8 | state machine transitions, cancelled/paid guards |
+| `payments/razorpay.test.ts` | 6 | order payload, HMAC signature and webhook verification |
+| `refunds.test.ts` | 7 | approval threshold parsing/boundaries, self-approval and duplicate-approval guards |
 
-## API integration suite (59 assertions)
+## API integration suite (86 assertions)
 
 Exercised against a live HTTP server with a real D1 database, in this order:
 
@@ -42,8 +43,14 @@ Exercised against a live HTTP server with a real D1 database, in this order:
 8. **Payments** — unsigned webhook rejected, invalid signature rejected, signed webhook accepted,
    order settles to paid, replayed webhook deduplicated.
 9. **Admin** — customer token rejected on every admin route, stats, low-stock alerts, paid order list,
-   refund on unknown order rejected.
-10. **Contact / notifications / health.**
+   refund on unknown order rejected, stock ledger created by the checkout batch and 403 for customers.
+10. **Order history and audit** — customer, webhook and admin transitions carry actor and reason; an
+   invalid transition is 409; admin changes appear in `GET /admin/audit` and customers get 403.
+11. **Refund approval** — below-threshold refund completes immediately and leaves the order lifecycle
+   intact; at-threshold refund is held (`202`, `requested`); repeated `requestKey` returns the same
+   refund; the requester cannot self-approve (403); a second admin approves; a second approval is 409;
+   a full refund marks the order `refunded` and is written to the history by the approving admin.
+12. **Contact / notifications / health.**
 
 ## Deployed preview checks
 

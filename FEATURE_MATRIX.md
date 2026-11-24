@@ -22,9 +22,9 @@ the specification, the row is `Repair`, not `Existing`.
 
 | Status | Sections |
 | --- | --- |
-| `Existing` | **7** — 02, 04, 06, 22, 23, 42, 45 |
-| `Repair` | **32** |
-| `New` | **9** — 10, 18, 19, 28, 30, 32, 34, 36, 39 |
+| `Existing` | **8** — 02, 04, 06, 20, 22, 23, 42, 45 |
+| `Repair` | **33** |
+| `New` | **7** — 10, 18, 28, 30, 32, 34, 36 |
 | `Future` | **1** — 33 |
 | `Out of scope` | **1** — 01 |
 
@@ -51,7 +51,7 @@ control centre the prompt specifies.
 
 | § | Requirement | Status | Evidence | Gap |
 | --- | --- | --- | --- | --- |
-| 07 | 25-area sidebar (Overview, Catalogue, Operations, Sales, Customers, Growth, Content, Service, Business, Administration) with badges and per-page states | Repair | `web/src/app/admin/layout.tsx:6` — 7 links: Dashboard, Products, Orders, Customers, Coupons, Refunds, Reviews | 18 specified areas have no page: Analytics, Variants, Inventory, Batches, Stock Movements, Returns, Payments, Shipments, Campaigns, Banners, Pages, FAQs, Support, Reports, Expenses, Staff & Roles, Audit Logs, Store Settings. No badge counts, no breadcrumbs |
+| 07 | 25-area sidebar (Overview, Catalogue, Operations, Sales, Customers, Growth, Content, Service, Business, Administration) with badges and per-page states | Repair | `web/src/app/admin/layout.tsx:6` — 8 links: Dashboard, Products, Orders, Customers, Coupons, Refunds, Reviews, Audit log | 17 specified areas have no page: Analytics, Variants, Inventory, Batches, Stock Movements, Returns, Payments, Shipments, Campaigns, Banners, Pages, FAQs, Support, Reports, Expenses, Staff & Roles, Store Settings. No badge counts, no breadcrumbs |
 | 08 | Design tokens + reusable AppShell/DataTable/FilterBar/DateRangePicker/StatusBadge/ConfirmDialog/Drawer/ImageUploader/EmptyState/ErrorState/Skeleton/Toast/Pagination | Repair | Tailwind token set in `web/src/app/globals.css`; tables hand-rolled per page | No shared component library. Tables, filters and empty states are duplicated per page; no dialog, drawer, toast, skeleton or pagination component |
 
 ### Identity, access and accountability (09–10, 39)
@@ -60,7 +60,7 @@ control centre the prompt specifies.
 | --- | --- | --- | --- | --- |
 | 09 | Secure admin auth: strong hashing, no public staff registration, reset tokens, session invalidation, MFA, sign-in event log | Repair | `web/src/lib/password.ts` (PBKDF2-SHA256, 210k), `web/src/lib/auth.ts` (opaque token, SHA-256 at rest, HttpOnly+Secure+Samesite=Lax cookie, bearer for mobile), revoke on logout; asserted in `scripts/api-test.mjs` | PBKDF2 instead of Argon2id/bcrypt (Web Crypto constraint, documented). `/auth/register` is public and can create only `customer`. No password-reset flow, no MFA, no sign-in audit events, no session invalidation on password change |
 | 10 | Staff management: invite, roles, deactivate, revoke sessions, last activity, permission matrix, 403 tests per role | New | None | Needs `staff`/`roles`/`permissions`/`role_permissions` tables, an authorization middleware, and one API test per role |
-| 39 | Append-only audit log of sensitive actions with actor, entity, before/after, correlation id, filters | New | `grep -ri audit src` returns nothing | Needs an `audit_logs` table, a `recordAudit()` helper called from every privileged mutation, read API and admin page |
+| 39 | Append-only audit log of sensitive actions with actor, entity, before/after, correlation id, filters | Repair | `admin_audit_log` (`0003_consistency.sql`), `auditStatement()` batched with the change it describes, `recordAudit()` for the rest (`web/src/lib/services/audit.ts`); written for order status/tracking/cancel, refund request/approve/complete/fail, product create/update/archive, variant price/stock/active changes, coupon create/activate, review moderation. Read via `GET /api/v1/admin/audit` (filters: `entityType`, `entityId`, `action`, `limit`) and `/admin/audit` | No `before/after` diff for every field (stored as a `detail_json` blob), no correlation/request id, no export, no retention policy |
 
 ### Catalogue and inventory (13–19)
 
@@ -70,20 +70,20 @@ control centre the prompt specifies.
 | 14 | Variants: unique SKU, paise integers, MRP, cost basis, dimensions, bulk edit with preview, price audit, immutable order snapshots | Repair | `product_variants` (UNIQUE sku, `CHECK price >= 0`), `order_items` snapshot columns, `PATCH /admin/variants/[id]` | No cost basis, no weight/dimension-driven shipping, no bulk edit, no before/after price audit. `compare_at_price` lives on the product, not the variant |
 | 15 | Media: signed uploads, MIME/signature/size validation, ordering, alt text, primary image, orphan cleanup | Repair | `product_images(url, alt, position)`; up to 6 image URLs per product; ordering by array index | No upload endpoint or provider. Admins paste URLs, so server-side file validation and orphan cleanup do not exist. Provider choice is an owner decision |
 | 16 | Categories with slug, description, image, order, active state, delete guard, collections | Repair | `categories` table, `GET /api/v1/categories`, storefront category pages | No admin category CRUD, no ordering UI, no delete guard, no collections model |
-| 17 | Inventory: on_hand / reserved / available, controlled movements with reason+actor, reservation expiry, per-variant thresholds | Repair | `product_variants.stock` with `CHECK (stock >= 0)`, `low_stock_threshold`, decrement inside the checkout batch | Single `stock` column: reserved stock is indistinguishable from sold stock. Adjustments are a raw `PATCH stock` with no reason, actor or ledger entry. No expiry or reconciliation |
+| 17 | Inventory: on_hand / reserved / available, controlled movements with reason+actor, reservation expiry, per-variant thresholds | Repair | `product_variants.stock` with `CHECK (stock >= 0)`, `low_stock_threshold`; every stock change now writes an `inventory_movements` row with a reason and actor | Single `stock` column: reserved stock is still indistinguishable from sold stock. No reservation expiry, no available-vs-on-hand split, no reconciliation report |
 | 18 | Batch/lot traceability, quarantine, recall flags | New (deferred) | None | Owner decision: does the brand record production batches at launch? |
-| 19 | Immutable stock movement ledger with filters, export, reconciliation | New | None | Needs `stock_movements` (variant, type, delta, reason, reference, actor, ts) and `GET /admin/inventory/movements` |
+| 19 | Immutable stock movement ledger with filters, export, reconciliation | Repair | `inventory_movements` (`0003_consistency.sql`, `CHECK (delta <> 0)`, reason CHECK, reference + actor columns), written in the same D1 batch as every stock change (`web/src/lib/services/inventory.ts`); `GET /api/v1/admin/variants/[id]/movements` (admin only, 403 asserted in `scripts/api-test.mjs`) | No stock-movement admin screen, no filters by date/reason, no CSV export, no opening/closing balance reconciliation |
 
 ### Orders, payments and fulfilment (20–26)
 
 | § | Requirement | Status | Evidence | Gap |
 | --- | --- | --- | --- | --- |
-| 20 | Validated order state machine, transition service, status history with actor+reason, derived customer status | Repair | `web/src/lib/orders.ts:14` transition table, `canTransition`, `nextStatuses`, `releasesInventory`; enforced in `PATCH /admin/orders/[number]`; unit tests in `orders.test.ts` | No `order_status_history` table: transitions are not recorded, so who changed what and why is unrecoverable. No return states, no cancellation reason persisted |
-| 21 | Order list with server pagination, date/status/payment filters, sort; detail with payment attempts, event history, notes, invoice/packing slip | Repair | `/admin/orders`, `/admin/orders/[number]`, `GET /admin/orders` (`status`, `q`, `limit`), `OrderView` with items/refunds/payment | No pagination (hard `LIMIT 100`, max 200), no date or payment-status filter, no sort control, no status timeline, notes are read-only, no invoice or packing slip |
+| 20 | Validated order state machine, transition service, status history with actor+reason, derived customer status | Existing | `web/src/lib/orders.ts:14` transition table, `canTransition`, `nextStatuses`, `releasesInventory`; enforced in `PATCH /admin/orders/[number]`; unit tests in `orders.test.ts` | `order_status_history` (`0003_consistency.sql`) records from/to state, actor type (customer/admin/system/webhook), actor label, reason and time; written in the same batch as each transition (`web/src/lib/history.ts`) and surfaced as `statusHistory` on the order API and admin detail page. API suite asserts customer, admin and refund transitions with actor and reason. Gap: return states still belong to §25/§26. |
+| 21 | Order list with server pagination, date/status/payment filters, sort; detail with payment attempts, event history, notes, invoice/packing slip | Repair | `/admin/orders`, `/admin/orders/[number]`, `GET /admin/orders` (`status`, `q`, `limit`), `OrderView` with items/refunds/payment | Status timeline and admin notes (used as the transition reason) are implemented. Gap: no pagination (hard `LIMIT 100`, max 200), no date or payment-status filter, no sort control, notes are read-only on the form, no invoice or packing slip |
 | 22 | Server-recalculated totals, transparent breakdown, audited manual adjustments | Existing | `quoteCheckout`/`createOrder` in `web/src/lib/services/checkout.ts`; API suite asserts client prices are ignored; `orders` stores subtotal/discount/shipping/tax/total with a CHECK | Admin abandoned-cart visibility is deferred (see §33) |
 | 23 | Provider integration: server-created orders, signature verification, signed webhooks, attempts modelled separately, idempotency, no credentials client-side | Existing (code) / Untested (live) | `web/src/lib/payments/razorpay.ts`, `payments` table, `webhook_events` UNIQUE, `idempotency_keys`; 59-assertion API suite covers signed webhook + replay | Live Razorpay never executed — no keys. `PAYMENT_PROVIDER=test` is refused when `NODE_ENV=production` |
 | 24 | Reconciliation view, conflict flagging, delayed/out-of-order events, safe retry | Repair | Webhook dedupe by `(provider, event_id)`; failed attempts recorded with error code; `/orders/[number]/retry-payment` | No reconciliation screen or export, no conflict flag when provider and internal state disagree, no test for out-of-order or delayed delivery |
-| 25 | Separate cancellation / return / refund-request / approval / execution; partial refunds; idempotency; threshold approval; return inspection | Repair | `refunds` table, `POST/GET /admin/refunds` with refundable-balance maths and provider refund call; `/admin/refunds`; API test | No approval step or threshold, no second approver, no `returns` table, no item-level refunds, no attachment upload, no restock inspection decision, no unique constraint preventing duplicate execution |
+| 25 | Separate cancellation / return / refund-request / approval / execution; partial refunds; idempotency; threshold approval; return inspection | Repair | `refunds` table + `approved_by`/`approved_at`/`request_key`; refunds at or above `REFUND_APPROVAL_THRESHOLD_PAISE` (default ₹5,000) are created as `requested` and need a different admin's `POST /admin/refunds/[id]/approve` (`web/src/lib/refunds.ts`, server-enforced); request-key replay returns the original refund; approve is a conditional status claim so a double click cannot pay twice; `provider_refund_id` and `request_key` are UNIQUE; `/admin/refunds` shows the approval queue; API suite covers hold, self-approval 403, approval, duplicate 409 and full refund | No `returns` table, no item-level refunds, no attachment upload, no restock inspection decision. One approval level only |
 | 26 | Shipments: carrier, tracking, events, packing slip, exception states | Repair | `orders.carrier`, `tracking_number`, `shipped_at`, `delivered_at`; admin PATCH writes them | No `shipments` table, no shipment events, no packing slip, no lost/damaged/RTO states, no courier adapter (none selected) |
 
 ### Customers, growth and content (27–34)
@@ -92,9 +92,9 @@ control centre the prompt specifies.
 | --- | --- | --- | --- | --- |
 | 27 | Searchable customer directory, profile with addresses/orders/consent, masking by role, segmentation, suspend with reason | Repair | `/admin/customers` + `GET /admin/customers` with order count and spend | No customer detail page, no consent preferences, no suspend/deactivate, no segmentation rules, no role-based masking |
 | 28 | Data minimization, access/correction/deletion workflows, export control and logging | New | Ownership scoping exists (`user_id` from session, 404 for other users) | No export, no deletion/anonymisation request workflow, no consent records, no export audit |
-| 29 | Coupons: type, value, window, global + per-customer limits, eligibility, stacking, atomic redemption, audit | Repair | `coupons` table with `CHECK (used_count <= usage_limit)`, window/min/max fields; `POST /admin/coupons` caps percent at 90; eligibility enforced in `checkout.ts`; API test | No per-customer redemption limit, no product/category eligibility, no documented stacking policy, no coupon audit trail |
+| 29 | Coupons: type, value, window, global + per-customer limits, eligibility, stacking, atomic redemption, audit | Repair | `coupons` table with `CHECK (used_count <= usage_limit)`, window/min/max fields; `POST /admin/coupons` caps percent at 90; eligibility enforced in `checkout.ts`; API test | Coupon create/activate/deactivate now write an `admin_audit_log` row. Gap: no per-customer redemption limit, no product/category eligibility, no documented stacking policy |
 | 30 | CMS: hero, tiles, collections, featured products, brand story, FAQs, announcement bar with scheduling and versioning | New | None | Needs `content_blocks` (or typed tables) + admin screens + public API |
-| 31 | Reviews with verified-purchase derivation, moderation reasons, abuse prevention | Repair | `reviews` table (`UNIQUE (product_id, user_id)`), `POST /admin/reviews`, `/admin/reviews`, public review submit | No order linkage, so a verified-purchase badge cannot be honestly derived. No reason codes, no moderation audit, no report-abuse flow |
+| 31 | Reviews with verified-purchase derivation, moderation reasons, abuse prevention | Repair | `reviews` table (`UNIQUE (product_id, user_id)`), `POST /admin/reviews`, `/admin/reviews`, public review submit | Moderation decisions are now in `admin_audit_log`. Gap: no order linkage, so a verified-purchase badge cannot be honestly derived; no reason codes, no report-abuse flow |
 | 32 | Campaign workspace with consent, test-send, provider adapters, delivery metrics | New (deferred) | None | Provider undecided; consent model (§28) is a prerequisite |
 | 33 | Abandoned cart segments and reminders | Future | `carts`/`cart_items` exist with `updated_at` | No segmentation, no consent, no attribution model — deliberately deferred |
 | 34 | Support tickets: number, order link, priority, assignment, internal notes, attachments, SLA | New | Only `contact_messages` (`status new/read/archived`) | Needs `support_tickets` + `ticket_messages` tables, admin queue, and agent permission separate from refund rights |
@@ -113,30 +113,34 @@ control centre the prompt specifies.
 | § | Requirement | Status | Evidence | Gap |
 | --- | --- | --- | --- | --- |
 | 40 | Consistent `/api/v1` contracts, standard error shape, pagination, correlation id, OpenAPI | Repair | 37 route handlers, `apiRoute`/`errorResponse` in `web/src/lib/http.ts` (stable `code`/`message`/`details`, no stack traces), zod on every mutation, `API_INVENTORY.md`, `API_DOCUMENTATION.md` | No correlation id in responses or logs, no pagination envelope, no OpenAPI document, admin route groups from the prompt are largely absent |
-| 41 | Normalised data model, unique constraints, compound indexes, TTL, documented migrations | Repair | `DATA_MODEL_MAP.md`; UNIQUE on email/sku/slug/order number/provider ids/`(provider, event_id)`; indexes on status, user, category, order items | Missing collections for staff/audit/ledger/shipments/tickets/content/expenses. No TTL index. No migration rollback procedure |
+| 41 | Normalised data model, unique constraints, compound indexes, TTL, documented migrations | Repair | `DATA_MODEL_MAP.md`; 3 ordered migrations with a runner (`scripts/migrate-local.mjs`); UNIQUE on email/sku/slug/order number/provider ids/`(provider, event_id)`/refund request key/provider refund id; indexes on status, user, category, order items, history, ledger | Still missing staff/permissions, shipments, tickets, content and expenses collections. No TTL index, no rollback procedure |
 | 42 | Checkout service: reload prices, validate coupon, atomic reservation, idempotent submission, no oversell, documented recovery | Existing | Single `db.batch()` in `web/src/lib/services/checkout.ts`; `CHECK (stock >= 0)` and `CHECK (used_count <= usage_limit)` abort the batch; `idempotency_keys`; `webhook_events` dedupe; failure keeps stock reserved and only cancel releases it | No last-unit concurrency test, no failure-injection test, no reservation-expiry job |
 | 43 | TanStack Query for server state, URL-persisted filters, dirty-state warnings, no decorative controls | Repair | Server components + `web/src/lib/client/api.ts` fetch wrapper; no optimistic updates on risky actions | TanStack Query not used (deliberate: server components cover reads), filters are not URL-persisted, no unsaved-changes guard. Deviation must be accepted or the dependency added |
 | 44 | Server pagination everywhere, projections, indexes, image optimisation, measured budgets | Repair | Catalogue `page`/`perPage`, aggregate queries in SQL, `LIMIT` on all lists | Admin lists return up to 100–200 rows unpaginated; no caching/invalidation layer; no performance measurement recorded |
-| 45 | OWASP-aligned security: authz on every operation, injection/XSS/CSRF, rate limits, secrets, dependency audit | Existing (with residual risks) | `SECURITY_FINDINGS.md`; bound SQL parameters, zod stripping, `assertSameOrigin`, HttpOnly+Secure cookies, D1 rate limits on auth/contact, no `dangerouslySetInnerHTML` | No MFA, no audit log, `npm audit` not run in this environment, no WAF rules |
+| 45 | OWASP-aligned security: authz on every operation, injection/XSS/CSRF, rate limits, secrets, dependency audit | Existing (with residual risks) | `SECURITY_FINDINGS.md`; bound SQL parameters, zod stripping, `assertSameOrigin`, HttpOnly+Secure cookies, D1 rate limits on auth/contact, no `dangerouslySetInnerHTML` | No MFA, `npm audit` not run in this environment, no WAF rules, no correlation ids in the audit log |
 | 46 | Unit + integration + authorization + E2E tests, acceptance criteria per feature | Repair | 50 unit tests (`npx vitest run`), 59 API assertions (`scripts/api-test.mjs`), `TESTING_REPORT.md` | No per-role authorization matrix (only admin vs customer), no browser E2E, no mobile tests, no concurrency/failure-injection |
 | 47 | Structured logs with request id, monitoring, backups with tested restore, incident runbook | Repair | `GET /api/v1/health`; `errorResponse` logs message only (no bodies, no secrets) | No request ids, no structured logging, no error-monitoring provider, no backup/export schedule, no tested restore, no incident checklist |
 | 48 | Separate local/staging/production, migrations in deployment, smoke test | Repair | Preview environment live (Workers + D1); `DEPLOYMENT.md`; immutable deploys | No staging environment, production not published, no scripted post-deploy smoke test |
 | 49 | Release checklist, feature matrix, known issues, API + data-model docs, permission matrix, env template, backup guide, runbook | Repair | `RELEASE_CHECKLIST.md`, `FEATURE_MATRIX.md`, `KNOWN_ISSUES.md`, `API_DOCUMENTATION.md`, `DATA_MODEL_MAP.md`, `.env.example` | No permission matrix (no roles exist yet), no backup/restore guide, no support runbook |
-| 50 | Phased execution with honest per-phase reporting; final acceptance across all admin workflows | Repair | Each phase reported with files, APIs, tests and limitations | Final acceptance cannot pass until §10 (RBAC), §39 (audit), §19 (ledger), §34 (support) and §38 (settings) are built |
+| 50 | Phased execution with honest per-phase reporting; final acceptance across all admin workflows | Repair | Each phase reported with files, APIs, tests and limitations | §20 (history), §39 (audit), §19 (ledger) and §25 (refund approval) are now implemented. Final acceptance still cannot pass until §10 (RBAC), §34 (support) and §38 (settings) are built |
 
 ## Part B — verification evidence for what does exist
 
 | Surface | State | Evidence |
 | --- | --- | --- |
-| Shared backend | Verified | 37 handlers; 59 assertions against `next dev` |
-| Database schema | Verified | 2 migrations applied locally and bootstrapped from empty on the preview |
+| Shared backend | Verified | 41 handlers; 86 assertions against `next dev` |
+| Database schema | Verified | 3 migrations applied locally in order; bootstrap applies pending migrations from an empty database |
+| Order status history | Verified | `statusHistory` asserted for customer, admin and refund transitions |
+| Admin audit log | Verified | refund request → approval → completion, and order status changes, read back through `GET /admin/audit` |
+| Inventory ledger | Verified | `order_reserved` movement created with the checkout batch; customer gets 403 |
+| Refund approval threshold | Verified | held at threshold, self-approval 403, second-admin approval, duplicate approval 409, request-key replay |
 | Auth lifecycle | Verified | register, duplicate email, wrong password, revocation all asserted |
 | Catalogue read path | Verified | `/`, `/shop`, `/products/cedar-smoked-vanilla` render live data on the preview |
 | Cart / wishlist / addresses | Verified | API suite |
 | Checkout quote + order creation | Verified | Server-price authority, coupon limits, atomic stock |
 | Order cancel + stock release | Verified | API suite |
 | Payments (test provider) | Verified | Signed webhook accepted, replay deduplicated |
-| Refunds | Verified | Rejects unknown order; records refund |
+| Refunds | Verified | Rejects unknown order; approval threshold; duplicate guards (see §25) |
 | Admin authorization | Verified | Customer tokens rejected on admin endpoints |
 | Admin UI | Implemented, not clicked through | 10 admin pages rendered; no browser pass |
 | Mobile app | Implemented, never launched | 18 screens, `tsc --noEmit` clean |
@@ -147,10 +151,9 @@ control centre the prompt specifies.
 **P0 — blocks the "administration platform" acceptance test in §50**
 
 1. Roles and permissions (§03, §10): staff, roles, resource-action permissions, server enforcement, 403 tests.
-2. Audit log (§39): table, `recordAudit()` on every privileged mutation, read-only viewer.
-3. Order status history + cancellation reasons (§20, §21).
-4. Inventory ledger and reserved/available split (§17, §19) so stock changes are explainable.
-5. Refund approval workflow with threshold and duplicate-execution guard (§25).
+2. Reserved/available stock split and reservation expiry (§17) — the ledger now explains a movement, but stock is still one number.
+
+**Done in this pass** — order status history (§20), audit log (§39), inventory movement ledger (§19), refund approval threshold with duplicate-execution guards (§25).
 
 **P1 — required by named launch-critical scope**
 
@@ -171,7 +174,7 @@ control centre the prompt specifies.
 | --- | --- | --- |
 | 1 | Confirm the runtime deviation: Next.js + D1 on Workers instead of Express + MongoDB | §05 is the one architectural departure; reversing it means a rebuild |
 | 2 | Which staff roles actually exist at launch, and whether one person may hold several | Drives the permission matrix and every 403 test |
-| 3 | Refund approval threshold and whether a second approver is mandatory | Cannot implement dual approval without a number |
+| 3 | Confirm the refund approval threshold (shipped default ₹5,000 via `REFUND_APPROVAL_THRESHOLD_PAISE`; `0` disables approval) | The mechanism is built; the number is a policy choice |
 | 4 | Whether production batches are recorded (§18) | Determines whether allocation/recall tables are needed |
 | 5 | Media strategy: Cloudinary account, or keep URL-based images | §15 cannot be completed without a provider |
 | 6 | Email/SMS/push providers and consent wording | Blocks §32 and §35 beyond in-app |

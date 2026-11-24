@@ -42,9 +42,10 @@ State as of 22 November 2026. `[x]` = done and verified. `[ ]` = outstanding.
 
 - [ ] Staff records, roles and resource-action permissions enforced server-side
 - [ ] 403 test per role for privileged endpoints
-- [ ] Append-only audit log for price, stock, order, coupon, refund and settings changes
-- [ ] Order status history with actor and reason
-- [ ] Stock movement ledger with reason and actor; reserved/available split
+- [x] Append-only audit log for price, stock, order, coupon and refund changes (`admin_audit_log`, `GET /admin/audit`, `/admin/audit`); staff and settings changes have nothing to log yet
+- [x] Order status history with actor and reason (`order_status_history`, shown on the admin order page)
+- [x] Stock movement ledger with reason and actor (`inventory_movements`, `GET /admin/variants/[id]/movements`)
+- [ ] Reserved/available stock split and reservation expiry
 - [ ] Refund approval threshold and duplicate-execution guard
 - [ ] Server-side pagination and date filters on every admin list
 - [ ] Support ticket queue

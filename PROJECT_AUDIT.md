@@ -14,7 +14,7 @@ third-party code.
 │   ├── public/images/       Product and brand imagery
 │   ├── scripts/             seed.mjs, api-test.mjs, gen-schema.mjs, dev helpers
 │   └── src/
-│       ├── app/             29 pages + 37 API route handlers
+│       ├── app/             30 pages + 41 API route handlers
 │       ├── components/      UI primitives, product cards, admin tables
 │       ├── lib/             Domain: db, auth, crypto, orders, payments, validation, config
 │       │   └── services/    cart, catalog, checkout, payments, orders, notify, addresses, analytics
@@ -94,7 +94,7 @@ Second pass, 23 November 2026, performed read-only against the master specificat
 | --- | --- | --- |
 | Repository audit | `PROJECT_AUDIT.md` | This file: layout, stack, shared logic, configuration, deployment |
 | Feature matrix | `FEATURE_MATRIX.md` | All 50 sections with status (`Existing` / `Repair` / `New` / `Future` / `Out of scope`), evidence and gap |
-| Route map | `ROUTE_MAP.md` | 29 pages + 37 API handlers with access level and file |
+| Route map | `ROUTE_MAP.md` | 30 pages + 41 API handlers with access level and file |
 | API inventory | `API_INVENTORY.md` | Endpoint-level reference |
 | Data model map | `DATA_MODEL_MAP.md` | Tables, CHECK invariants, indexes, missing collections, migrations |
 | Security findings | `SECURITY_FINDINGS.md` | Auth, payments, injection, CSRF, residual risks |
@@ -105,29 +105,29 @@ Supporting definition: `ANALYTICS_DEFINITIONS.md` (metric formulas and exclusion
 
 ### Headline finding
 
-The system is a working **D2C storefront with a seven-screen admin dashboard**, not yet the
+The system is a working **D2C storefront with an eight-screen admin dashboard**, not yet the
 25-area **administration platform** the prompt describes. Measured against the 50 sections:
 
 | Status | Count | Where |
 | --- | --- | --- |
-| Existing | 7 | §02, §04, §06, §22, §23, §42, §45 |
-| Repair | 32 | Mostly admin depth: filters, pagination, history, refund approval, shipping, settings |
-| New | 9 | §10 staff/RBAC, §18 batches, §19 stock ledger, §28 data rights, §30 CMS, §32 campaigns, §34 support tickets, §36 finance, §39 audit log |
+| Existing | 8 | §02, §04, §06, §20, §22, §23, §42, §45 |
+| Repair | 33 | Mostly admin depth: filters, pagination, shipping, settings |
+| New | 7 | §10 staff/RBAC, §18 batches, §28 data rights, §30 CMS, §32 campaigns, §34 support tickets, §36 finance |
 | Future | 1 | §33 abandoned carts |
 | Out of scope | 1 | §01 (process instruction) |
 
 The customer journey is the strong half: server-priced checkout, atomic stock and coupon accounting,
-verified payments and idempotent webhooks are implemented and tested. The weak half is operational
-accountability — **no RBAC beyond admin/customer, no audit log, no order status history, and no stock
-movement ledger**, so the prompt's questions "who changed this, why, and what did stock do" cannot
-currently be answered.
+verified payments and idempotent webhooks are implemented and tested. Operational accountability is now
+started: **order status history, an append-only admin audit log, a signed stock ledger and
+second-admin refund approval** exist and are asserted in the API suite. What remains is **RBAC beyond
+admin/customer**, support tickets, store settings and most of the 25 named admin areas.
 
 ### Duplicate logic and dead code found in this pass
 
 | Item | Location | Assessment |
 | --- | --- | --- |
-| `settings` table | `0001_init.sql` | Defined, never read or written. Reserved for §38, not a bug |
-| `adminOrderPatchSchema.note` | `web/src/lib/validation.ts` | Accepted by the schema but never persisted — an order note field is validated and discarded |
+| `settings` table | `0001_init.sql` | Read and written only for `schema_version`; still reserved for §38, not a bug |
+| `adminOrderPatchSchema.note` | `web/src/lib/validation.ts` | **Fixed** — `note` is now persisted as the reason on `order_status_history` |
 | `contact_messages` | `0001_init.sql` | Written by the contact form, never readable in admin — the closest thing to a support queue, and unreachable |
 | `OrderView.canCancel` | `web/src/lib/services/orders.ts` | Admin screens receive customer-scoped action flags that the admin UI does not use |
 | Per-page table markup | `web/src/app/admin/**` | Filter/table/empty-state markup duplicated per page instead of a shared `DataTable` (§08) |

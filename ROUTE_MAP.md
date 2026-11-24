@@ -15,7 +15,7 @@ present are listed separately at the end — they are the §07 / §40 gaps, not 
 - Pages under `/admin` also redirect server-side in `web/src/app/admin/layout.tsx`; that redirect is
   navigation convenience, not the security boundary.
 
-## Pages (29)
+## Pages (30)
 
 ### Storefront
 
@@ -57,8 +57,9 @@ present are listed separately at the end — they are the §07 / §40 gaps, not 
 | `/admin/coupons` | admin | `admin/coupons/page.tsx` | Create + list with usage |
 | `/admin/refunds` | admin | `admin/refunds/page.tsx` | Refund queue + issue form |
 | `/admin/reviews` | admin | `admin/reviews/page.tsx` | Pending/published/rejected moderation |
+| `/admin/audit` | admin | `admin/audit/page.tsx` | Read-only audit log of privileged changes, last 200 |
 
-## API routes (37)
+## API routes (41)
 
 ### Public and customer
 
@@ -99,14 +100,17 @@ present are listed separately at the end — they are the §07 / §40 gaps, not 
 | `GET/POST /api/v1/admin/products` | admin | `admin/products/route.ts` | List / create with variants and images |
 | `PATCH/DELETE /api/v1/admin/products/[id]` | admin | `admin/products/[id]/route.ts` | Allowlisted column update; soft archive |
 | `POST /api/v1/admin/products/[id]/variants` | admin | `admin/products/[id]/variants/route.ts` | Add variant (unique SKU) |
-| `PATCH /api/v1/admin/variants/[id]` | admin | `admin/variants/[id]/route.ts` | Price, stock, threshold, active — no reason/ledger |
+| `PATCH /api/v1/admin/variants/[id]` | admin | `admin/variants/[id]/route.ts` | Price, stock, threshold, active; stock delta writes an `inventory_movements` row and an audit entry |
+| `GET /api/v1/admin/variants/[id]/movements` | admin | `admin/variants/[id]/movements/route.ts` | Signed stock ledger for one variant |
 | `GET /api/v1/admin/orders` | admin | `admin/orders/route.ts` | `status`, `q`, `limit` (≤200) |
 | `GET/PATCH /api/v1/admin/orders/[number]` | admin | `admin/orders/[number]/route.ts` | State-machine-guarded transition, tracking, customer notification |
 | `GET /api/v1/admin/customers` | admin | `admin/customers/route.ts` | Directory with order count + spend |
 | `GET/POST /api/v1/admin/coupons` | admin | `admin/coupons/route.ts` | List / create (percent ≤ 90) |
 | `PATCH/DELETE /api/v1/admin/coupons/[id]` | admin | `admin/coupons/[id]/route.ts` | Edit / deactivate |
-| `GET/POST /api/v1/admin/refunds` | admin | `admin/refunds/route.ts` | Refund queue / issue refund (partial supported) |
-| `GET/PATCH /api/v1/admin/reviews` | admin | `admin/reviews/route.ts` | Moderation queue / publish or reject |
+| `GET/POST /api/v1/admin/refunds` | admin | `admin/refunds/route.ts` | Refund queue / issue refund; held as `requested` at or above the approval threshold; `requestKey` replay |
+| `POST /api/v1/admin/refunds/[id]/approve` | admin (not the requester) | `admin/refunds/[id]/approve/route.ts` | Second-admin approval; atomic status claim; 403 self-approval, 409 duplicate |
+| `GET/PATCH /api/v1/admin/reviews` | admin | `admin/reviews/route.ts` | Moderation queue / publish or reject; audit entry per decision |
+| `GET /api/v1/admin/audit` | admin | `admin/audit/route.ts` | Audit log with `entityType`, `entityId`, `action`, `limit` filters |
 
 ## Routes the master prompt specifies but that do not exist
 
@@ -114,8 +118,9 @@ These are the §40 route groups with no implementation, in the order they appear
 
 `/admin/staff`, `/admin/roles`, `/admin/dashboard` (metrics live at `/admin/stats`),
 `/admin/categories`, `/admin/products/[id]/variants` (create only), `/admin/inventory`,
-`/admin/inventory/movements`, `/admin/batches`, `/admin/payments`, `/admin/refunds/[id]` (no
-approval action), `/admin/shipments`, `/admin/customers/[id]`, `/admin/content`, `/admin/campaigns`,
+`/admin/inventory/movements`, `/admin/batches`, `/admin/payments` (no payment screen; refund
+approval exists at `POST /admin/refunds/[id]/approve`), `/admin/shipments`,
+`/admin/inventory` (no movement screen; ledger reads via `/admin/variants/[id]/movements`), `/admin/customers/[id]`, `/admin/content`, `/admin/campaigns`,
 `/admin/support`, `/admin/reports`, `/admin/exports`, `/admin/settings`, `/admin/audit-logs`,
 `/auth/password/reset`, `/auth/password/reset/confirm`.
 

@@ -56,7 +56,7 @@ contact_messages                              (standalone)
 | `orders` | Order header + immutable address snapshot | `number UNIQUE`; `status` and `payment_status` enumerated by CHECK; **`CHECK (total = subtotal - discount + shipping_fee)`**; `idx_orders_user`, `idx_orders_status`; `user_id` `ON DELETE SET NULL` so orders survive account deletion |
 | `order_items` | Purchase-time snapshot | **`CHECK (line_total = unit_price * quantity)`**; `quantity > 0`; cascade with order |
 | `payments` | Payment attempts, one per provider try | `provider_order_id UNIQUE`, `provider_payment_id UNIQUE`; `status IN ('created','authorized','captured','failed','refunded')`; `idx_payments_order` |
-| `refunds` | Refund requests and outcomes | `amount > 0`; `status IN ('requested','processing','completed','failed')`; `created_by`; `idx_refunds_order` |
+| `refunds` | Refund requests and outcomes | `amount > 0`; `status IN ('requested','processing','completed','failed')`; `created_by`, `approved_by`, `approved_at`; **`request_key UNIQUE`** and **`provider_refund_id UNIQUE`** (duplicate-execution guards); `idx_refunds_order`, `idx_refunds_status` |
 | `reviews` | Product reviews | `rating BETWEEN 1 AND 5`; `UNIQUE (product_id, user_id)`; `status IN ('pending','published','rejected')`; `idx_reviews_product` |
 | `notifications` | In-app notifications | `idx_notifications_user` on `(user_id, created_at)` |
 | `contact_messages` | Contact form inbox | `status IN ('new','read','archived')` |
@@ -65,6 +65,9 @@ contact_messages                              (standalone)
 | `rate_limits` | D1-backed fixed-window counters | `key` primary key, `count >= 0`, `window_start` epoch ms |
 | `settings` | Key/value store | `key` primary key — **present but unused** (§38) |
 | `device_tokens` (0002) | Expo push tokens | `UNIQUE (token)`, `user_id` cascade, `platform` |
+| `order_status_history` (0003) | Append-only order transitions with actor and reason | `from_status`/`to_status`, `actor_type CHECK IN ('customer','admin','system','webhook')`, `actor_id`, `actor_label`, `reason`; `idx_order_status_history_order`; cascade with order |
+| `admin_audit_log` (0003) | Append-only privileged admin actions | `actor_id`, `actor_email`, `action`, `entity_type`, `entity_id`, `summary`, `detail_json`; `idx_admin_audit_log_created`, `idx_admin_audit_log_entity` |
+| `inventory_movements` (0003) | Signed stock ledger written with every stock change | **`CHECK (delta <> 0)`**; `reason CHECK IN ('order_reserved','order_released','admin_adjustment','restock')`; `actor_type`, `reference_type`/`reference_id`; `idx_inventory_movements_variant`, `idx_inventory_movements_reference` |
 
 ### CHECK constraints that carry business rules
 
@@ -88,14 +91,10 @@ created — an unused table would imply functionality that is not there.
 | Missing table | Needed for | Notes |
 | --- | --- | --- |
 | `staff`, `roles`, `permissions`, `role_permissions` | §03, §10 | Cannot be simulated with `users.role` |
-| `audit_logs` | §39 | Append-only, `actor_id`, `action`, `entity_type`, `entity_id`, `before_json`, `after_json`, `request_id` |
-| `order_status_history` | §20, §21 | `from_state`, `to_state`, `actor_id`, `reason`, `created_at` |
-| `stock_movements` | §17, §19 | `variant_id`, `type`, `quantity_delta`, `reason`, `reference`, `actor_id` |
 | `stock_reservations` | §17, §42 | Reserved/available split and expiry |
 | `batches` | §18 | Deferred pending owner decision |
 | `shipments`, `shipment_events` | §26 | Carrier, tracking, exceptions |
 | `returns`, `return_items` | §25 | Inspection and restock disposition |
-| `refund_approvals` | §25 | Threshold and second approver |
 | `support_tickets`, `ticket_messages` | §34 | Includes internal notes |
 | `content_blocks`, `faqs`, `banners` | §30 | Structured blocks, no raw HTML |
 | `campaigns`, `campaign_sends`, `consents` | §28, §32 | Consent must be recorded before sending |
@@ -107,9 +106,11 @@ created — an unused table would imply functionality that is not there.
 - `products.rating_avg` / `rating_count` are denormalised aggregates recalculated when a review is
   published or rejected. They must never be edited directly.
 - Dashboard revenue and refund totals are computed by query, never stored.
-- Stock is stored once (`product_variants.stock`). Because there is no reservation ledger yet, a
-  pending-payment order has already decremented it — the row is "held", not "sold". §17/§19 replaces
-  this with an explicit reserved/available model.
+- Stock is stored once (`product_variants.stock`). Because there is no reservation split yet, a
+  pending-payment order has already decremented it — the row is "held", not "sold". `inventory_movements`
+  records every change with a reason and reference, so a balance is explainable, but an explicit
+  reserved/available model is still §17 work.
+- `order_status_history` and `admin_audit_log` are append-only: the app inserts, never updates or deletes.
 
 ## Migrations
 
@@ -117,11 +118,14 @@ created — an unused table would imply functionality that is not there.
 | --- | --- | --- |
 | `0001_init.sql` | Full schema | Drop tables (development only) |
 | `0002_device_tokens.sql` | Push tokens | `DROP TABLE device_tokens` |
+| `0003_consistency.sql` | Order status history, admin audit log, inventory ledger, refund approval columns and unique guards | `DROP` the three new tables and indexes; columns cannot be removed in SQLite without a table rebuild |
 
-- Local: `npm run db:migrate:local` (Wrangler `d1 execute --local`).
+- Local: `npm run db:migrate:local` → `scripts/migrate-local.mjs`, which applies every migration in
+  filename order.
 - Remote: `npm run db:migrate:remote` — intended for production, requires the owner's go-ahead.
-- Runtime bootstrap: `BOOTSTRAP_DB=1` applies the generated schema once, records `schema_version`,
-  and seeds the catalogue. It exists because the hosting panel exposes no shell. It is **off by
-  default** and should not be enabled in production, where migrations should be applied explicitly.
+- Runtime bootstrap: `BOOTSTRAP_DB=1` applies any migration the database has not recorded yet (tracked
+  in `settings.schema_version`), then seeds the catalogue on an empty database. It exists because the
+  hosting panel exposes no shell. It is **off by default** and should not be enabled in production,
+  where migrations should be applied explicitly.
 - Every migration is additive. There is no destructive change in the current history, so a code
   rollback leaves the schema valid.

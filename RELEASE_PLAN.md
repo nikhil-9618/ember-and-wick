@@ -5,17 +5,17 @@ Target launch: **30 November 2026**. Today: 23 November 2026.
 ## Scope correction after the 50-section audit
 
 The storefront and customer journey are on track. The **administration platform is not**, measured
-against the master prompt: `FEATURE_MATRIX.md` records 7 sections `Existing`, 32 `Repair` and 9 `New`.
-Specifically, staff roles, the audit log, order status history, the stock movement ledger, support
-tickets and store settings do not exist yet.
+against the master prompt: `FEATURE_MATRIX.md` records 8 sections `Existing`, 33 `Repair` and 7 `New`.
+Order status history, the admin audit log, the stock movement ledger and refund approval now exist;
+staff roles, support tickets, store settings and most of the 25 admin areas do not.
 
 This changes the release shape, not just the schedule:
 
-- **30 November can ship the storefront and mobile app** with the current seven-screen admin, plus the
+- **30 November can ship the storefront and mobile app** with the current eight-screen admin, plus the
   P0 consistency fixes below.
 - **It cannot honestly be called a completed "centralized administration platform"** until §10
-  (RBAC), §39 (audit log), §20 (status history), §19 (stock ledger), §34 (support) and §38 (settings)
-  are built and tested. Those are one to two weeks of focused work, not a polish pass.
+  (RBAC), §34 (support), §38 (settings) and the missing admin areas are built and tested. Those are
+  one to two weeks of focused work, not a polish pass.
 - Nothing in that list is cosmetic. Each is a question the prompt says an operator must be able to
   answer: *who changed this, why, and what happened to stock.*
 
@@ -63,20 +63,24 @@ This changes the release shape, not just the schedule:
 
 **P0 — consistency and accountability (needed before the admin can be handed to staff)**
 
-5. Order status history table + cancellation/refund reasons (§20) — currently a status change leaves
-   no trace of who did it or why.
-6. Refund approval threshold and duplicate-execution guard (§25) — today a single admin can refund and
-   the same refund can be requested twice.
-7. Stock movement ledger and reserved/available split (§17, §19) — stock edits are unattributable.
-8. Audit log for privileged mutations (§39).
-9. Roles and permissions beyond `admin` (§10) if more than one person gets access before launch.
+5. ~~Order status history table + reasons (§20)~~ — **done**: `order_status_history`, actor type/label,
+   reason, written with each transition, shown on the admin order page and asserted in the API suite.
+6. ~~Refund approval threshold and duplicate-execution guard (§25)~~ — **done**: second-admin approval
+   at/above `REFUND_APPROVAL_THRESHOLD_PAISE`, request-key replay, unique provider refund id, status
+   claim against double execution.
+7. ~~Audit log for privileged mutations (§39)~~ — **done**: `admin_audit_log`, `GET /admin/audit`,
+   `/admin/audit` page.
+8. ~~Stock movement ledger (§19)~~ — **done**: `inventory_movements` written with every stock change,
+   `GET /admin/variants/[id]/movements`.
+9. Reserved/available stock split (§17) — the ledger explains a movement, but `stock` is still one number.
+10. Roles and permissions beyond `admin` (§10) if more than one person gets access before launch.
 
 **P1 — the rest of the specified platform**
 
-10. Missing admin areas: Inventory, Stock Movements, Shipments, Returns, Payments, Reports, Store
-    Settings, Staff & Roles, Audit Logs (§07).
-11. Server-side pagination and date filters on every admin list (§21, §44).
-12. Support tickets (§34) and store settings API/UI (§38).
+11. Missing admin areas: Inventory, Stock Movements, Shipments, Returns, Payments, Reports, Store
+    Settings, Staff & Roles (§07).
+12. Server-side pagination and date filters on every admin list (§21, §44).
+13. Support tickets (§34) and store settings API/UI (§38).
 
 ## Release gates
 

@@ -21,7 +21,8 @@ Everything below is verified to be *unfinished or unverified*. Nothing here is p
    works.
 5. **Canonical URLs and the sitemap fall back to `localhost`** unless `NEXT_PUBLIC_APP_URL` is set
    before the build. The preview therefore emits localhost canonicals.
-6. **Preview has no admin account.** The bootstrap seeds the catalogue only. To exercise the admin UI
+6. **Preview has no admin account.** The bootstrap seeds the catalogue only (the second seeded admin
+   exists in local development only). To exercise the admin UI
    on the preview, set `BOOTSTRAP_ADMIN_EMAIL`/`BOOTSTRAP_ADMIN_PASSWORD` and re-bootstrap, or use the
    seeded local accounts.
 7. **Shipping is a flat rule, not a courier integration.** There is no live rate calculation, AWB or
@@ -35,17 +36,23 @@ missing features, not bugs, and each is a `New` row in `FEATURE_MATRIX.md`:
 
 1. **No RBAC.** Only `customer` and `admin` exist. There are no resource-action permissions, no staff records, no
    invitation flow, no role reassignment and no 403 test per role.
-2. **No audit log.** Nothing records who changed a price, stock level, order status, coupon or refund.
-3. **No order status history.** `orders.status` is overwritten in place, so a transition's actor and
-   reason are lost.
-4. **No stock movement ledger.** `product_variants.stock` is edited with a raw `PATCH`; there is no
-   reason, actor or reconciliation, and no reserved/available split.
+2. **Partial audit coverage.** Order status/tracking/cancel, refunds, product create/update/archive,
+   variant price/stock/active changes, coupon create/activate and review moderation are logged. Staff
+   and permission changes do not exist yet, so they cannot be logged.
+3. **Order status history exists but returns do not.** Transitions now record actor and reason; there
+   is no return state, return inspection or item-level return flow (§25/§26).
+4. **Stock is still one number.** Every change writes an `inventory_movements` row with reason and
+   actor, but there is no reserved/available split, no reservation expiry, no movement screen and no
+   reconciliation report.
 5. **No support tickets.** The contact form writes `contact_messages`, which no admin screen reads.
 6. **No store settings UI or API.** The `settings` table exists but is never read or written.
 7. **Missing admin areas:** Inventory, Stock Movements, Batches, Shipments, Returns, Payments,
    Reports, Staff & Roles, Audit Logs, Store Settings, Content, Campaigns, Support.
 8. **Admin lists are unpaginated** (hard `LIMIT 100`, max 200) and have no date-range filters.
-9. **Refunds have no approval step**, no threshold and no unique constraint against duplicate execution.
+9. **Refund approval needs two admin accounts.** Refunds at or above
+   `REFUND_APPROVAL_THRESHOLD_PAISE` (default ₹5,000) can only be approved by a *different* admin; with
+   one admin account those refunds stay `requested`. Raise the threshold, set it to `0` to disable
+   approval, or seed a second admin (`manager@emberandwick.in` locally).
 10. **No shipment records.** Tracking is two columns on `orders`; there are no shipment events,
     packing slips or lost/damaged/RTO states.
 
@@ -57,8 +64,9 @@ missing features, not bugs, and each is a `New` row in `FEATURE_MATRIX.md`:
 
 ## Operational notes
 
-11. **Bootstrap is a convenience, not a migration system.** It runs only with `BOOTSTRAP_DB=1`, refuses
-    to run twice, and applies the bundled DDL in one batch. Production should use Wrangler migrations.
+11. **Bootstrap applies pending migrations, but is not a migration system.** It runs only with
+    `BOOTSTRAP_DB=1`, tracks the applied migration in `settings.schema_version`, and refuses an unknown
+    version instead of guessing. Production should still use `npm run db:migrate:remote`.
 12. **Dev server needs a clean `.next` after a production build** (missing
     `required-server-files.json` otherwise).
 13. **Expo SDK 54 with React 19.1** may emit peer-dependency warnings during `npm install`; the app
