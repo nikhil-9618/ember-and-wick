@@ -4,26 +4,96 @@ import { ApiError } from "../errors";
 /**
  * Sign-up verification email delivery.
  *
- * Two free-tier HTTP providers are supported, because a Worker has no SMTP:
- * Resend (`RESEND_API_KEY`) and Brevo (`BREVO_API_KEY` + `OTP_FROM_EMAIL`).
- * Only a server-side key is ever used; the browser opens no third-party
- * connection and never sees the key.
+ * Mail is sent as the store, never from a personal mailbox. `OTP_FROM_EMAIL` must
+ * be an address on a domain the store owns and has authenticated with the
+ * provider (a Brevo sender domain or a Resend verified domain), so free mailbox
+ * providers are rejected outright: a deployment cannot quietly fall back to a
+ * Gmail address.
+ *
+ * Two free-tier HTTP providers are supported, because there is no SMTP: Resend
+ * (`RESEND_API_KEY`) and Brevo (`BREVO_API_KEY`). Only a server-side key is ever
+ * used; the browser opens no third-party connection and never sees the key.
  *
  * There is no on-screen fallback: an account is verified only by a code that
  * reached a real inbox.
  */
+
+const PERSONAL_MAILBOX_DOMAINS = new Set([
+  "gmail.com",
+  "googlemail.com",
+  "yahoo.com",
+  "yahoo.co.in",
+  "yahoo.co.uk",
+  "ymail.com",
+  "outlook.com",
+  "outlook.in",
+  "hotmail.com",
+  "hotmail.co.uk",
+  "live.com",
+  "live.in",
+  "msn.com",
+  "icloud.com",
+  "me.com",
+  "mac.com",
+  "aol.com",
+  "gmx.com",
+  "gmx.net",
+  "mail.com",
+  "proton.me",
+  "protonmail.com",
+  "pm.me",
+  "zoho.com",
+  "zohomail.in",
+  "rediffmail.com",
+  "yandex.com",
+  "yandex.ru",
+  "tutanota.com",
+  "fastmail.com",
+  "qq.com",
+  "163.com",
+  "126.com",
+]);
+
+const DEFAULT_FROM_NAME = "Ember & Wick";
 
 function read(env: Record<string, string | undefined>, name: string): string | null {
   const value = process.env[name] ?? env[name];
   return value && value.trim().length > 0 ? value.trim() : null;
 }
 
-/** True when a provider is configured well enough to actually send. */
-export async function emailConfigured(): Promise<boolean> {
+/** Why a sender address is unusable, or null when it is a valid store domain. */
+export function senderAddressIssue(fromEmail: string): string | null {
+  const address = fromEmail.trim();
+  const match = /^[^@\s]+@([a-z0-9-]+(?:\.[a-z0-9-]+)+)$/i.exec(address);
+  if (!match) return `OTP_FROM_EMAIL (${address}) is not a valid email address.`;
+  const domain = (match[1] ?? "").toLowerCase();
+  if (PERSONAL_MAILBOX_DOMAINS.has(domain)) {
+    return `OTP_FROM_EMAIL (${address}) is a personal mailbox. Verification mail must be sent from an address on the store's own domain, for example no-reply@your-store-domain.com.`;
+  }
+  return null;
+}
+
+/**
+ * The single reason mail cannot be sent right now, or null when it can. The
+ * message is written to be shown to an operator, so it names the exact setting
+ * that is missing.
+ */
+export async function emailConfigIssue(): Promise<string | null> {
   const env = await getEnv();
-  if (read(env, "RESEND_API_KEY")) return true;
-  if (read(env, "BREVO_API_KEY") && read(env, "OTP_FROM_EMAIL")) return true;
-  return false;
+  const provider = read(env, "RESEND_API_KEY") ? "Resend" : read(env, "BREVO_API_KEY") ? "Brevo" : null;
+  if (!provider) {
+    return "No email provider is configured. Add BREVO_API_KEY or RESEND_API_KEY on the server.";
+  }
+  const fromEmail = read(env, "OTP_FROM_EMAIL");
+  if (!fromEmail) {
+    return `Email delivery needs a sender on the store's own domain. Set OTP_FROM_EMAIL, for example no-reply@your-store-domain.com, and authenticate that domain with ${provider}.`;
+  }
+  return senderAddressIssue(fromEmail);
+}
+
+/** True when a provider and a store-domain sender are both configured. */
+export async function emailConfigured(): Promise<boolean> {
+  return (await emailConfigIssue()) === null;
 }
 
 function verificationEmail(code: string): { subject: string; text: string; html: string } {
@@ -43,12 +113,17 @@ function verificationEmail(code: string): { subject: string; text: string; html:
   return { subject, text, html };
 }
 
-/** Sends the code through whichever provider key is configured. */
+/** Sends the code as the store's own address through the configured provider. */
 export async function sendVerificationEmail(to: string, code: string): Promise<void> {
   const env = await getEnv();
+  const issue = await emailConfigIssue();
+  if (issue) throw new ApiError("email_not_configured", issue, 503);
+
   const resendKey = read(env, "RESEND_API_KEY");
   const brevoKey = read(env, "BREVO_API_KEY");
-  const fromEmail = read(env, "OTP_FROM_EMAIL");
+  const fromEmail = read(env, "OTP_FROM_EMAIL")!;
+  const fromName = read(env, "EMAIL_FROM_NAME") ?? DEFAULT_FROM_NAME;
+  const replyTo = read(env, "EMAIL_REPLY_TO");
   const mail = verificationEmail(code);
 
   if (resendKey) {
@@ -59,11 +134,12 @@ export async function sendVerificationEmail(to: string, code: string): Promise<v
       method: "POST",
       headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        from: fromEmail ?? "Ember & Wick <onboarding@resend.dev>",
+        from: `${fromName} <${fromEmail}>`,
         to: [to],
         subject: mail.subject,
         text: mail.text,
         html: mail.html,
+        ...(replyTo ? { reply_to: replyTo } : {}),
       }),
     });
     if (!response.ok) {
@@ -73,35 +149,20 @@ export async function sendVerificationEmail(to: string, code: string): Promise<v
     return;
   }
 
-  if (brevoKey) {
-    if (!fromEmail) {
-      throw new ApiError(
-        "email_not_configured",
-        "Email delivery needs a verified sender address in OTP_FROM_EMAIL.",
-        503,
-      );
-    }
-    const response = await fetch("https://api.brevo.com/v3/smtp/email", {
-      method: "POST",
-      headers: { "api-key": brevoKey, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sender: { email: fromEmail, name: "Ember & Wick" },
-        to: [{ email: to }],
-        subject: mail.subject,
-        textContent: mail.text,
-        htmlContent: mail.html,
-      }),
-    });
-    if (!response.ok) {
-      console.error("[signup] brevo delivery failed:", response.status);
-      throw new ApiError("email_error", "We couldn't send the verification email. Please try again.", 502);
-    }
-    return;
+  const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+    method: "POST",
+    headers: { "api-key": brevoKey!, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sender: { email: fromEmail, name: fromName },
+      to: [{ email: to }],
+      subject: mail.subject,
+      textContent: mail.text,
+      htmlContent: mail.html,
+      ...(replyTo ? { replyTo: { email: replyTo } } : {}),
+    }),
+  });
+  if (!response.ok) {
+    console.error("[signup] brevo delivery failed:", response.status);
+    throw new ApiError("email_error", "We couldn't send the verification email. Please try again.", 502);
   }
-
-  throw new ApiError(
-    "email_not_configured",
-    "Verification email is not configured yet. Add RESEND_API_KEY (and OTP_FROM_EMAIL) on the server.",
-    503,
-  );
 }

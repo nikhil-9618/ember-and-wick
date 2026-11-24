@@ -30,7 +30,7 @@ interface Totals {
 
 interface OrderResponse {
   order: { id: string; number: string; total: number; status: string };
-  payment: { provider: "razorpay" | "test" | "demo"; keyId: string | null; providerOrderId: string; amount: number; currency: string };
+  payment: { provider: "razorpay" | "test"; keyId: string | null; providerOrderId: string; amount: number; currency: string };
 }
 
 interface Props {
@@ -38,7 +38,7 @@ interface Props {
   initialTotals: Totals;
   itemCount: number;
   email: string;
-  paymentMode: "razorpay" | "test" | "demo" | "unconfigured";
+  paymentMode: "razorpay" | "test" | "unconfigured";
 }
 
 const EMPTY_ADDRESS = {
@@ -237,19 +237,14 @@ export function CheckoutForm({ addresses, initialTotals, itemCount, email, payme
           {paymentMode === "unconfigured" ? (
             <p className="mt-4 border border-clay/40 bg-clay/5 px-4 py-3 text-sm text-clay-dark">
               Online payments are not connected yet, so checkout is paused. Nothing will be charged. Please contact{" "}
-              <a href="mailto:hello@emberandwick.in" className="underline">
-                hello@emberandwick.in
+              <a href="mailto:hello@emberandwick.com" className="underline">
+                hello@emberandwick.com
               </a>{" "}
               to order.
             </p>
           ) : paymentMode === "test" ? (
             <p className="mt-4 border border-sage/50 bg-sage/10 px-4 py-3 text-sm text-ink">
               <strong>Test mode.</strong> No real payment will be taken. Use the test button to confirm the order.
-            </p>
-          ) : paymentMode === "demo" ? (
-            <p className="mt-4 border border-sage/50 bg-sage/10 px-4 py-3 text-sm text-ink">
-              <strong>Demo store.</strong> No money is taken and no card details are requested. Place the order, then
-              confirm the simulated payment to see the full flow.
             </p>
           ) : null}
 
@@ -439,9 +434,7 @@ export function CheckoutForm({ addresses, initialTotals, itemCount, email, payme
         )}
 
         <p className="mt-3 text-center text-xs text-ink-soft">
-          {paymentMode === "demo"
-            ? "Demo checkout · simulated payment only"
-            : "Secure payment by Razorpay · UPI, cards, netbanking"}
+          Secure payment by Razorpay · UPI, cards, netbanking
         </p>
         <p className="mt-2 text-center text-xs text-ink-soft">
           <Link href="/refund-policy" className="underline underline-offset-4">

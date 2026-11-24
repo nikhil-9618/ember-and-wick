@@ -13,7 +13,7 @@ import {
   OTP_MAX_ATTEMPTS,
   OTP_TTL_SECONDS,
 } from "../otp";
-import { emailConfigured, sendVerificationEmail } from "./email";
+import { emailConfigIssue, sendVerificationEmail } from "./email";
 
 export interface SignupChallengeView {
   verificationRequired: true;
@@ -56,12 +56,9 @@ export async function startSignup(input: {
   }
 
   // Fail before hashing a password or touching the database if mail is missing.
-  if (!(await emailConfigured())) {
-    throw new ApiError(
-      "email_not_configured",
-      "Account verification email is not configured yet. Add RESEND_API_KEY (and OTP_FROM_EMAIL) on the server.",
-      503,
-    );
+  const mailIssue = await emailConfigIssue();
+  if (mailIssue) {
+    throw new ApiError("email_not_configured", mailIssue, 503);
   }
 
   const existing = await db

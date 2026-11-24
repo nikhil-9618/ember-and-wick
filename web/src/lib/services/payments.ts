@@ -241,8 +241,8 @@ export async function retryPaymentIntent(
         ]),
   ];
 
-  if (config.mode === "test" || config.mode === "demo") {
-    const provider = config.mode;
+  if (config.mode === "test") {
+    const provider = "test";
     const providerOrderId = `${provider}_${order.id}_${randomId("rt").slice(-6)}`;
     await db.batch([
       db
@@ -276,17 +276,17 @@ export async function retryPaymentIntent(
   return { provider: "razorpay", keyId: config.keyId, providerOrderId: rzp.id, amount: order.total, currency: "INR" };
 }
 
-/** Test/demo confirmation. Only reachable in `test` or explicit `demo` mode. */
+/** Test-mode confirmation. Refused unless PAYMENT_PROVIDER=test outside production. */
 export async function confirmTestPayment(userId: string, orderNumber: string): Promise<void> {
   const config = await getPaymentConfig();
-  if (config.mode !== "test" && config.mode !== "demo") {
+  if (config.mode !== "test") {
     throw new ApiError("forbidden", "Simulated payments are disabled.", 403);
   }
   const order = await loadOrderByNumber(orderNumber);
   if (!order || order.user_id !== userId) throw notFound("Order not found.");
   await markOrderPaid(
     order.id,
-    { providerPaymentId: `${config.mode}_payment_${order.id}`, method: config.mode },
+    { providerPaymentId: `test_payment_${order.id}`, method: "test" },
     { type: "customer", id: userId, label: order.email },
   );
 }

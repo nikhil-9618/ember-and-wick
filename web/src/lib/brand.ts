@@ -4,7 +4,7 @@ export const BRAND = {
   tagline: "Hand-poured beeswax and soy candles with wooden wicks.",
   description:
     "Small-batch aromatherapy candles poured by hand with pure beeswax, natural soy, wooden wicks and steam-distilled essential oils.",
-  supportEmail: "hello@emberandwick.in",
+  supportEmail: "hello@emberandwick.com",
   supportPhone: "+91 80 4718 2200",
   address: "Studio 4, 12th Main, Indiranagar, Bengaluru 560038, India",
   shippingOrigin: "Bengaluru, Karnataka",

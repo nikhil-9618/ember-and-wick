@@ -36,11 +36,12 @@ Set these in the Sites panel (Preview and Production separately), never in the r
 | `RAZORPAY_KEY_ID` | yes (live) | Razorpay key id; also used by the browser modal |
 | `RAZORPAY_KEY_SECRET` | yes (live) | Server-side signing; never exposed |
 | `RAZORPAY_WEBHOOK_SECRET` | yes | Webhook HMAC verification |
-| `PAYMENT_PROVIDER` | no | `test` outside production; `demo` for a public demo store (needs `ALLOW_DEMO_PAYMENTS=1`). Omit in a real store |
-| `ALLOW_DEMO_PAYMENTS` | demo only | `1` enables `PAYMENT_PROVIDER=demo`: checkout and refunds are simulated and labelled as such |
+| `PAYMENT_PROVIDER` | no | `test` for the automated suite only, and it is refused when `NODE_ENV=production`. Omit it in a real store: with the Razorpay keys present the mode is `razorpay` |
 | `SEED_DEMO_ACCOUNTS` | demo only | `1` creates the demo admin/manager/customer accounts on the first request |
 | `RESEND_API_KEY` or `BREVO_API_KEY` | yes | Free-tier email delivery for sign-up verification codes; without one, sign-up returns 503 |
-| `OTP_FROM_EMAIL` | with Brevo | Verified sender address (Resend defaults to `onboarding@resend.dev`) |
+| `OTP_FROM_EMAIL` | yes | Sender address **on the store's own domain**, e.g. `no-reply@emberandwick.com`, authenticated with the provider. Personal mailboxes (gmail/outlook/yahoo and friends) are rejected at runtime with `503 email_not_configured` |
+| `EMAIL_FROM_NAME` | no | Display name on the envelope, defaults to `Ember & Wick` |
+| `EMAIL_REPLY_TO` | no | Reply-To address, e.g. `hello@emberandwick.com` |
 | `BOOTSTRAP_DB` | first deploy only | `1` applies migrations + catalogue to an empty database |
 | `BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD` | first deploy only | Creates the first admin when bootstrapping |
 | `NEXT_PUBLIC_APP_URL` / `APP_ORIGIN` | yes | Canonical URLs, sitemap, absolute links (build/runtime) |
@@ -68,11 +69,11 @@ categories and two coupons. On the public demo deployment it also holds the demo
 ### Demo deployment (preview)
 
 Sign-in is password only. A new account must confirm its email address with a six-digit code before
-it can sign in; the code is delivered by Resend or Brevo, so `RESEND_API_KEY` (plus `OTP_FROM_EMAIL`
-for Brevo) must be set in Sites → Secrets for sign-up to work. There is no on-screen code fallback.
-Payments run with `PAYMENT_PROVIDER=demo` + `ALLOW_DEMO_PAYMENTS=1`: checkout, order placement,
-cancellation, refunds and the refund approval threshold all work end to end, but no money is
-collected and every screen says so.
+it can sign in; the code is delivered by Resend or Brevo as `OTP_FROM_EMAIL`, which must be an
+address on the store's own domain. There is no on-screen code fallback and no personal-mailbox
+sender. Payments have no simulated path outside `test` mode: an order is marked paid only by a
+verified Razorpay capture, so without live keys checkout pauses with a clear message instead of
+pretending to charge.
 
 | Role | Email | Password |
 | --- | --- | --- |
@@ -85,10 +86,11 @@ accounts) before the store takes real orders.
 
 ### Going live
 
-1. Add `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` and `RAZORPAY_WEBHOOK_SECRET`, and unset
-   `PAYMENT_PROVIDER`, `ALLOW_DEMO_PAYMENTS` and `SEED_DEMO_ACCOUNTS`.
-2. Add `RESEND_API_KEY` (or `BREVO_API_KEY` + `OTP_FROM_EMAIL`) so sign-up verification codes are
-   emailed. Without it, sign-up is refused with a clear message.
+1. Add live `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` and `RAZORPAY_WEBHOOK_SECRET`, and unset
+   `PAYMENT_PROVIDER` and `SEED_DEMO_ACCOUNTS`.
+2. Authenticate the store domain with the email provider (Brevo → Senders → Domains, which publishes
+   the DKIM/SPF records), then set `BREVO_API_KEY` and `OTP_FROM_EMAIL=no-reply@<store-domain>`.
+   Without a domain sender, sign-up is refused with a clear message.
 3. Delete the demo users and rotate `BOOTSTRAP_ADMIN_PASSWORD`.
 4. Point the Razorpay webhook at `https://<domain>/api/v1/payments/webhook`.
 

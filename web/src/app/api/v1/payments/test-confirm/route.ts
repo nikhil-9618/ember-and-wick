@@ -5,9 +5,9 @@ import { getPaymentConfig } from "@/lib/config";
 import { confirmTestPayment } from "@/lib/services/payments";
 
 /**
- * Only reachable when PAYMENT_PROVIDER=test (never in production) or when the
- * operator explicitly enabled demo payments. It exists so the automated suite and
- * the public demo can walk the full order journey without a live gateway.
+ * Only reachable when PAYMENT_PROVIDER=test, which `getPaymentConfig` refuses in
+ * production. It exists so the automated suite can walk the full order journey
+ * without a live gateway; a deployment can never fake a capture.
  */
 export const POST = apiRoute(async (request) => {
   assertSameOrigin(request);

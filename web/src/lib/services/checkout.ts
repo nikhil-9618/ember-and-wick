@@ -46,7 +46,7 @@ export interface OrderSummary {
 }
 
 export interface PaymentIntent {
-  provider: "razorpay" | "test" | "demo";
+  provider: "razorpay" | "test";
   keyId: string | null;
   providerOrderId: string;
   amount: number;
@@ -303,8 +303,8 @@ export async function createOrder(
 
   // Payment intent is created after the order exists so an orphan provider order
   // can never outlive a rolled-back database transaction.
-  if (paymentConfig.mode === "test" || paymentConfig.mode === "demo") {
-    const provider = paymentConfig.mode;
+  if (paymentConfig.mode === "test") {
+    const provider = "test";
     const providerOrderId = `${provider}_${orderId}`;
     await db
       .prepare(

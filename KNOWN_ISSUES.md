@@ -24,12 +24,17 @@ Everything below is verified to be *unfinished or unverified*. Nothing here is p
    before the build. The preview therefore emits localhost canonicals.
 6. **The demo deployment has public credentials.** The preview runs with `SEED_DEMO_ACCOUNTS=1`, so
    admin, manager and customer accounts with documented passwords exist. Remove the switch and the
-   demo users before the store takes real orders. Separately, sign-up needs `RESEND_API_KEY` (or
-   `BREVO_API_KEY` + `OTP_FROM_EMAIL`) in Sites → Secrets; until it is set, new accounts are refused
-   with `503 email_not_configured` rather than being created unverified.
+   demo users before the store takes real orders. Separately, sign-up needs a provider key plus
+   `OTP_FROM_EMAIL` on the store's own domain (personal mailboxes are rejected) in Sites → Secrets;
+   until both are set, new accounts are refused with `503 email_not_configured` rather than being
+   created unverified.
 7. **Shipping is a flat rule, not a courier integration.** There is no live rate calculation, AWB or
    tracking-provider sync; order tracking reflects internal statuses only.
 8. **Product images are single-resolution files.** No responsive `srcset`/CDN variants are generated.
+9. **Hosting is Cloudflare-specific.** The data layer reads the D1 binding through
+   `getCloudflareContext()`, so a Vercel/Render/Railway deploy needs a managed SQL database and a
+   portable data layer first; copying the repo to one of those hosts without that port will start
+   but fail on the first query.
 
 ## Administration platform gaps (master prompt §03, §07–§39)
 
