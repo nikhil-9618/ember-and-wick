@@ -10,7 +10,7 @@
  * credentials are for local development only.
  */
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -33,6 +33,11 @@ async function hashPassword(password) {
 }
 
 const q = (value) => (value === null || value === undefined ? "NULL" : `'${String(value).replace(/'/g, "''")}'`);
+const latestMigration = readdirSync(join(root, "migrations"))
+  .filter((file) => file.endsWith(".sql"))
+  .sort()
+  .at(-1)
+  ?.replace(/\.sql$/, "");
 const n = (value) => (value === null || value === undefined ? "NULL" : String(value));
 const now = new Date().toISOString();
 const statements = [];
@@ -65,11 +70,15 @@ if (reset) {
 }
 
 const adminHash = await hashPassword(process.env.SEED_ADMIN_PASSWORD || "AdminPass123!");
+const managerHash = await hashPassword(process.env.SEED_MANAGER_PASSWORD || "ManagerPass123!");
 const customerHash = await hashPassword(process.env.SEED_CUSTOMER_PASSWORD || "Customer123!");
 
+// Two admins so the refund approval threshold (a second pair of eyes) can be
+// exercised locally: one admin requests the refund, the other approves it.
 statements.push(
   `INSERT OR IGNORE INTO users (id, email, password_hash, name, phone, role, created_at, updated_at) VALUES
    ('usr_admin', 'admin@emberandwick.in', ${q(adminHash)}, 'Studio Admin', '+91 80 4718 2200', 'admin', ${q(now)}, ${q(now)}),
+   ('usr_manager', 'manager@emberandwick.in', ${q(managerHash)}, 'Studio Manager', '+91 80 4718 2201', 'admin', ${q(now)}, ${q(now)}),
    ('usr_demo', 'customer@example.com', ${q(customerHash)}, 'Aarav Menon', '+91 98450 11223', 'customer', ${q(now)}, ${q(now)});`,
 );
 
@@ -123,7 +132,7 @@ for (const [id, productId, body, rating, userId] of reviews) {
 statements.push(
   `UPDATE products SET rating_avg = COALESCE((SELECT AVG(rating) FROM reviews r WHERE r.product_id = products.id AND r.status = 'published'), 0),
      rating_count = (SELECT COUNT(*) FROM reviews r WHERE r.product_id = products.id AND r.status = 'published');`,
-  `INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', '0002_device_tokens');`,
+  `INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', ${q(latestMigration)});`,
 );
 
 const tmpDir = join(here, ".tmp");
@@ -157,6 +166,7 @@ console.log(`
 Seeded Ember & Wick from src/lib/seed-data.json.
 
   Admin     admin@emberandwick.in    ${process.env.SEED_ADMIN_PASSWORD ? "(SEED_ADMIN_PASSWORD)" : "AdminPass123!"}
+  Manager   manager@emberandwick.in  ${process.env.SEED_MANAGER_PASSWORD ? "(SEED_MANAGER_PASSWORD)" : "ManagerPass123!"}
   Customer  customer@example.com      ${process.env.SEED_CUSTOMER_PASSWORD ? "(SEED_CUSTOMER_PASSWORD)" : "Customer123!"}
 
 Local development credentials only. Never seed a production database with these.

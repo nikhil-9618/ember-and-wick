@@ -1,15 +1,17 @@
 import type { D1Database } from "./types-d1";
-import { SCHEMA_SQL, SCHEMA_VERSION } from "./schema.generated";
+import { SCHEMA_MIGRATIONS, SCHEMA_VERSION } from "./schema.generated";
 import seed from "./seed-data.json";
 import { randomId } from "./crypto";
 import { hashPassword } from "./password";
 
 /**
- * Applies the schema and seeds the catalogue on a completely empty database.
+ * Applies any migration the database has not recorded yet and seeds the
+ * catalogue on a completely empty database.
  *
- * This exists so a fresh hosted deployment is usable without shell access to
- * Cloudflare. It is opt-in (BOOTSTRAP_DB=1), idempotent, and refuses to run once
- * a schema version is recorded. Production should prefer `npm run db:migrate:remote`.
+ * This exists so a hosted deployment is usable without shell access to
+ * Cloudflare. It is opt-in (BOOTSTRAP_DB=1) and each migration is applied at most
+ * once, tracked by the `schema_version` row. Production should prefer
+ * `npm run db:migrate:remote`.
  */
 let bootstrapPromise: Promise<void> | null = null;
 
@@ -30,14 +32,33 @@ async function run(db: D1Database): Promise<void> {
     .prepare("SELECT value FROM settings WHERE key = 'schema_version'")
     .first<{ value: string }>()
     .catch(() => null);
-  if (existing?.value) return;
 
-  // D1's exec() rejects PRAGMA statements and leading comments, so the bundled
-  // DDL is split and applied as a single atomic batch instead.
-  const statements = SCHEMA_SQL.split(";")
-    .map((statement) => statement.trim())
-    .filter((statement) => statement.length > 0 && !/^pragma\b/i.test(statement));
-  await db.batch(statements.map((statement) => db.prepare(statement)));
+  const appliedIndex = existing?.value
+    ? SCHEMA_MIGRATIONS.findIndex((migration) => migration.version === existing.value)
+    : -1;
+  if (existing?.value && appliedIndex === -1) {
+    throw new Error(
+      `Database schema version "${existing.value}" is not known to this build. Run the matching migrations before deploying.`,
+    );
+  }
+  const pending = SCHEMA_MIGRATIONS.slice(appliedIndex + 1);
+
+  for (const migration of pending) {
+    // D1's exec() rejects PRAGMA statements, so each migration is split and
+    // applied as a single atomic batch instead.
+    const statements = migration.sql
+      .split(";")
+      .map((statement) => statement.trim())
+      .filter((statement) => statement.length > 0 && !/^pragma\b/i.test(statement));
+    await db.batch(statements.map((statement) => db.prepare(statement)));
+    await db
+      .prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', ?)")
+      .bind(migration.version)
+      .run();
+  }
+
+  // Nothing to seed if every migration was already applied by a previous boot.
+  if (pending.length === 0) return;
 
   const now = new Date().toISOString();
   const productCount = await db
