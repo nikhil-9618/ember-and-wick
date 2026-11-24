@@ -72,9 +72,9 @@ present are listed separately at the end — they are the §07 / §40 gaps, not 
 | `POST /api/v1/products/[slug]/reviews` | user | same | One review per user per product; `pending` status |
 | `GET /api/v1/categories` | public | `categories/route.ts` | Active categories |
 | `POST /api/v1/contact` | public | `contact/route.ts` | Rate limited; stores `contact_messages` |
-| `POST /api/v1/auth/register` | public | `auth/register/route.ts` | Rate limited; creates `customer` only |
-| `POST /api/v1/auth/login` | public | `auth/login/route.ts` | Rate limited; verifies the password and sends a 6-digit code, no session |
-| `POST /api/v1/auth/otp/verify` | public | `auth/otp/verify/route.ts` | Single-use code → session cookie + bearer token |
+| `POST /api/v1/auth/register` | public | `auth/register/route.ts` | Rate limited; creates an unverified `customer` and emails a 6-digit code, no session |
+| `POST /api/v1/auth/register/verify` | public | `auth/register/verify/route.ts` | Single-use emailed code → verified account, session cookie + bearer token |
+| `POST /api/v1/auth/login` | public | `auth/login/route.ts` | Rate limited; password sign-in for a verified account |
 | `POST /api/v1/auth/logout` | user | `auth/logout/route.ts` | Revokes session, clears cookie |
 | `GET /api/v1/auth/me` | user | `auth/me/route.ts` | Current session user |
 | `POST /api/v1/auth/password` | user | `auth/password/route.ts` | Requires current password |

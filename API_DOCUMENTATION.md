@@ -31,23 +31,29 @@ Password rules: 8–128 chars, at least one letter and one number. `phone` is op
 
 Errors: `409 conflict` when the email is taken, `422 validation_error` with a message per field.
 
-## 2. Login (two-step with an emailed code) / logout / me
+## 2. Sign-up verification, login, logout / me
 
-`POST /auth/login` with `{ "email", "password" }` verifies the password and issues a single-use
-six-digit code. It deliberately does **not** create a session:
+`POST /auth/register` with `{ "name", "email", "password", "phone?" }` creates the account
+**unverified** and emails a single-use six-digit code to that address:
 
 ```json
-{ "otpRequired": true, "challengeId": "otp_…", "email": "aarav@example.com",
-  "expiresAt": "2026-11-24T04:02:11.000Z", "expiresInSeconds": 600, "delivery": "email" }
+{ "verificationRequired": true, "challengeId": "sotp_…", "email": "aarav@example.com",
+  "expiresAt": "2026-11-24T04:02:11.000Z", "expiresInSeconds": 600 }
 ```
 
-With `OTP_DEMO_MODE=1` (demo deployments only) the response also carries `demoCode` so the store can
-show the code on screen. Without a mail provider and without that flag the call fails with `503
-email_not_configured` instead of issuing a code nobody can receive.
+No session exists at this point. Without a mail provider the call fails with `503
+email_not_configured` rather than creating an account nobody can verify; there is deliberately no
+on-screen fallback.
 
-`POST /auth/otp/verify` with `{ "challengeId", "code" }` → `{ "user", "token", "expiresAt" }` plus a
-Set-Cookie header. Codes expire after 10 minutes, allow five attempts, are single use, and issuing a
-new code revokes the previous one. Wrong codes return `401`.
+`POST /auth/register/verify` with `{ "challengeId", "code" }` → `201 { "user", "token",
+"expiresAt" }` plus a Set-Cookie header. This is the only place a new account becomes usable. Codes
+expire after 10 minutes, allow five attempts, are single use, and requesting a new code revokes the
+previous one. Wrong codes return `401`.
+
+`POST /auth/login` with `{ "email", "password" }` → `{ "user", "token", "expiresAt" }` and a
+session cookie. Sign-in is password only, because the address was verified once at sign-up. An
+unverified account is refused with `403 email_unverified`; registering the same address again
+replaces its details and sends a fresh code.
 
 `POST /auth/logout` revokes the session. `GET /auth/me` returns `{ "user": … }`;
 `PATCH /auth/me` accepts `{ name?, phone? }`; `POST /auth/password` accepts

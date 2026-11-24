@@ -22,11 +22,11 @@ Everything below is verified to be *unfinished or unverified*. Nothing here is p
    works.
 5. **Canonical URLs and the sitemap fall back to `localhost`** unless `NEXT_PUBLIC_APP_URL` is set
    before the build. The preview therefore emits localhost canonicals.
-6. **The demo deployment has public credentials and visible sign-in codes.** The preview runs with
-   `SEED_DEMO_ACCOUNTS=1`, so admin, manager and customer accounts with documented passwords exist,
-   and with `OTP_DEMO_MODE=1` the one-time code is shown on screen because no mail provider is
-   configured. Both are demo switches: remove them, delete the demo users and add an email provider
-   before the store takes real orders.
+6. **The demo deployment has public credentials.** The preview runs with `SEED_DEMO_ACCOUNTS=1`, so
+   admin, manager and customer accounts with documented passwords exist. Remove the switch and the
+   demo users before the store takes real orders. Separately, sign-up needs `RESEND_API_KEY` (or
+   `BREVO_API_KEY` + `OTP_FROM_EMAIL`) in Sites → Secrets; until it is set, new accounts are refused
+   with `503 email_not_configured` rather than being created unverified.
 7. **Shipping is a flat rule, not a courier integration.** There is no live rate calculation, AWB or
    tracking-provider sync; order tracking reflects internal statuses only.
 8. **Product images are single-resolution files.** No responsive `srcset`/CDN variants are generated.

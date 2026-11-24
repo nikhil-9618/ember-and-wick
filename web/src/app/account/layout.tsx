@@ -1,12 +1,13 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth";
+import { Icon, type IconName } from "@/components/ui/icons";
 
-const LINKS = [
-  { href: "/account", label: "Profile" },
-  { href: "/account/orders", label: "Orders" },
-  { href: "/account/addresses", label: "Addresses" },
-  { href: "/account/wishlist", label: "Wishlist" },
+const LINKS: { href: string; label: string; icon: IconName }[] = [
+  { href: "/account", label: "Profile", icon: "user" },
+  { href: "/account/orders", label: "Orders", icon: "package" },
+  { href: "/account/addresses", label: "Addresses", icon: "map-pin" },
+  { href: "/account/wishlist", label: "Wishlist", icon: "heart" },
 ];
 
 export const dynamic = "force-dynamic";
@@ -26,14 +27,16 @@ export default async function AccountLayout({ children }: { children: React.Reac
         <ul className="flex flex-wrap gap-6 pb-3 text-sm">
           {LINKS.map((link) => (
             <li key={link.href}>
-              <Link href={link.href} className="text-ink-soft hover:text-ink">
+              <Link href={link.href} className="flex items-center gap-1.5 text-ink-soft transition-colors hover:text-ink">
+                <Icon name={link.icon} size={15} />
                 {link.label}
               </Link>
             </li>
           ))}
           {user.role === "admin" ? (
             <li>
-              <Link href="/admin" className="text-clay hover:underline">
+              <Link href="/admin" className="flex items-center gap-1.5 text-clay hover:underline">
+                <Icon name="chart" size={15} />
                 Admin dashboard
               </Link>
             </li>

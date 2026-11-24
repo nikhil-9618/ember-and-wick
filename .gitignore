@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+.pnp/
+.pnp.js
+
+# Build output
+.next/
+out/
+dist/
+build/
+.turbo/
+web/freebuff-sites-build/
+*.tsbuildinfo
+
+# Local Cloudflare / D1 state
+.wrangler/
+.dev.vars
+web/.wrangler/
+
+# Environment files (never commit real credentials)
+.env
+.env.local
+.env.*.local
+.env.production
+
+# Expo / React Native
+.expo/
+.expo-shared/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/
+*.log
+npm-debug.log*
+yarn-error.log*

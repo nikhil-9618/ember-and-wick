@@ -2,6 +2,7 @@ import Link from "next/link";
 import { getCurrentUser } from "@/lib/auth";
 import { getCart } from "@/lib/services/cart";
 import { BRAND } from "@/lib/brand";
+import { Icon } from "@/components/ui/icons";
 
 const NAV = [
   { href: "/shop", label: "Shop all" },
@@ -49,36 +50,48 @@ export async function SiteHeader() {
         <div className="flex items-center gap-5">
           <Link
             href="/shop"
-            className="hidden text-[0.8125rem] text-ink-soft transition-colors hover:text-ink sm:block"
+            className="hidden items-center gap-1.5 text-[0.8125rem] text-ink-soft transition-colors hover:text-ink sm:flex"
             aria-label="Search candles"
           >
-            Search
+            <Icon name="search" size={17} />
+            <span className="hidden lg:inline">Search</span>
           </Link>
           <Link
             href={user ? "/account" : "/login"}
-            className="text-[0.8125rem] text-ink-soft transition-colors hover:text-ink"
+            className="flex items-center gap-1.5 text-[0.8125rem] text-ink-soft transition-colors hover:text-ink"
           >
-            {user ? user.name.split(" ")[0] : "Sign in"}
+            <Icon name="user" size={17} />
+            <span>{user ? user.name.split(" ")[0] : "Sign in"}</span>
           </Link>
-          <Link href="/cart" className="relative text-[0.8125rem] text-ink-soft hover:text-ink">
-            Cart
+          <Link
+            href="/cart"
+            className="relative flex items-center gap-1.5 text-[0.8125rem] text-ink-soft transition-colors hover:text-ink"
+            aria-label={`Cart, ${itemCount} item${itemCount === 1 ? "" : "s"}`}
+          >
+            <Icon name="bag" size={17} />
+            <span>Cart</span>
             {itemCount > 0 ? (
               <span className="absolute -right-3 -top-2 flex h-4 min-w-4 items-center justify-center rounded-full bg-clay px-1 text-[0.625rem] font-medium text-ivory">
                 {itemCount}
               </span>
             ) : null}
-            <span className="sr-only">{itemCount} items in cart</span>
           </Link>
         </div>
       </div>
 
       <details className="border-t border-line/70 md:hidden">
-        <summary className="shell cursor-pointer list-none py-2 text-[0.75rem] uppercase tracking-[0.14em] text-ink-soft">
+        <summary className="shell flex cursor-pointer list-none items-center gap-2 py-2 text-[0.75rem] uppercase tracking-[0.14em] text-ink-soft">
+          <Icon name="menu" size={15} />
           Browse
         </summary>
         <nav aria-label="Primary mobile" className="shell flex flex-col gap-3 pb-4">
           {NAV.map((item) => (
-            <Link key={item.href} href={item.href} className="text-sm text-ink-soft">
+            <Link
+              key={item.href}
+              href={item.href}
+              className="flex items-center gap-2 text-sm text-ink-soft"
+            >
+              <Icon name={item.href === "/about" ? "sparkles" : item.href === "/faq" ? "message" : "tag"} size={15} />
               {item.label}
             </Link>
           ))}

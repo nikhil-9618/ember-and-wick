@@ -20,7 +20,8 @@ export default async function RegisterPage({
         <p className="eyebrow">Join the studio</p>
         <h1 className="mt-3 text-3xl">Create an account</h1>
         <p className="mt-2 text-sm text-ink-soft">
-          Save addresses, track orders and keep a wishlist across your phone and laptop.
+          We&apos;ll email a 6-digit code to confirm your address. Save addresses, track orders and keep a wishlist
+          across your phone and laptop.
         </p>
         <div className="mt-8">
           <AuthForm mode="register" next={next && next.startsWith("/") ? next : "/account"} />

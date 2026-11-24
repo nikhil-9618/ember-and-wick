@@ -20,7 +20,7 @@ export default async function LoginPage({
         <p className="eyebrow">Welcome back</p>
         <h1 className="mt-3 text-3xl">Sign in</h1>
         <p className="mt-2 text-sm text-ink-soft">
-          Sign in with your password, then confirm the one-time code we send you.
+          Sign in with the email and password you verified when you created your account.
         </p>
         <div className="mt-8">
           <AuthForm mode="login" next={next && next.startsWith("/") ? next : "/account"} />

@@ -6,8 +6,14 @@
  *
  * Requires PAYMENT_PROVIDER=test so the test-only payment confirmation route is
  * enabled; the suite refuses to run against a production payment mode.
+ *
+ * Sign-up emails are captured by a local Resend-compatible sink on
+ * MAIL_CATCHER_PORT (default 4319). Start the server under test with
+ * RESEND_API_KEY=local_test_key EMAIL_API_BASE=http://127.0.0.1:4319 so the real
+ * delivery code runs and the suite can read the code it actually sent.
  */
 import { createHmac, randomUUID } from "node:crypto";
+import { createServer } from "node:http";
 
 const BASE = process.env.BASE_URL ?? "http://127.0.0.1:3000";
 const WEBHOOK_SECRET = process.env.RAZORPAY_WEBHOOK_SECRET ?? "";
@@ -59,21 +65,51 @@ function cookieFrom(headers) {
   return raw.split(";")[0];
 }
 
-/**
- * Signs in through the two-step flow. With demo delivery the API returns the code
- * to the caller, so the suite never needs access to an inbox.
- */
+// A tiny Resend-compatible sink. The server under test points EMAIL_API_BASE at
+// it, so sign-up exercises the real delivery code and the suite reads the code
+// that was actually emailed, without needing an inbox.
+const MAIL_PORT = Number(process.env.MAIL_CATCHER_PORT ?? 4319);
+const inbox = [];
+const mailServer = createServer((request, response) => {
+  let raw = "";
+  request.on("data", (chunk) => {
+    raw += chunk;
+  });
+  request.on("end", () => {
+    let payload = {};
+    try {
+      payload = JSON.parse(raw || "{}");
+    } catch {
+      payload = {};
+    }
+    const html = payload.html ?? payload.htmlContent ?? "";
+    const match = /([0-9]{6})/.exec(html);
+    const first = Array.isArray(payload.to) ? payload.to[0] : undefined;
+    const recipient = typeof first === "string" ? first : first?.email;
+    if (match && recipient) inbox.push({ to: recipient, code: match[1] });
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end('{"id":"test_email"}');
+  });
+});
+await new Promise((resolve, reject) => {
+  mailServer.once("error", reject);
+  mailServer.listen(MAIL_PORT, "127.0.0.1", resolve);
+});
+
+async function codeFor(address) {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const found = inbox.find((message) => message.to === address);
+    if (found) return found.code;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  return null;
+}
+
 async function signIn(emailAddress, password) {
-  const started = await req("/api/v1/auth/login", {
+  return req("/api/v1/auth/login", {
     method: "POST",
     origin: ORIGIN,
     body: { email: emailAddress, password },
-  });
-  if (started.status !== 200 || !started.body?.demoCode) return started;
-  return req("/api/v1/auth/otp/verify", {
-    method: "POST",
-    origin: ORIGIN,
-    body: { challengeId: started.body.challengeId, code: started.body.demoCode },
   });
 }
 
@@ -114,19 +150,64 @@ const register = await req("/api/v1/auth/register", {
   body: { name: "Test Buyer", email, password },
   origin: ORIGIN,
 });
-check("registration returns 201", register.status === 201, JSON.stringify(register.body));
-const token = register.body?.token;
-const cookie = cookieFrom(register.headers);
-check("registration returns a session token", typeof token === "string" && token.length > 20);
-check("registration sets an HttpOnly cookie", Boolean(cookie) && /ew_session=/.test(cookie));
+check(
+  "registration asks for email verification",
+  register.status === 202 && register.body?.verificationRequired === true && typeof register.body?.challengeId === "string",
+  JSON.stringify(register.body),
+);
+check("no session is issued before the emailed code", !register.body?.token && !cookieFrom(register.headers));
 check("password is never echoed back", !JSON.stringify(register.body).includes(password));
+
+const verificationCode = await codeFor(email);
+check(
+  "a six-digit code was emailed",
+  /^[0-9]{6}$/.test(verificationCode ?? ""),
+  verificationCode ? "" : `no mail captured on 127.0.0.1:${MAIL_PORT} — start the server with EMAIL_API_BASE=http://127.0.0.1:${MAIL_PORT}`,
+);
+
+const wrongCode = verificationCode === "111111" ? "222222" : "111111";
+const badVerify = await req("/api/v1/auth/register/verify", {
+  method: "POST",
+  origin: ORIGIN,
+  body: { challengeId: register.body.challengeId, code: wrongCode },
+});
+check("an incorrect code is rejected", badVerify.status === 401 && !badVerify.body?.token, JSON.stringify(badVerify.body));
+
+const unverifiedLogin = await req("/api/v1/auth/login", {
+  method: "POST",
+  origin: ORIGIN,
+  body: { email, password },
+});
+check(
+  "an unverified account cannot sign in",
+  unverifiedLogin.status === 403 && unverifiedLogin.body?.error?.code === "email_unverified",
+  JSON.stringify(unverifiedLogin.body),
+);
+
+const verified = await req("/api/v1/auth/register/verify", {
+  method: "POST",
+  origin: ORIGIN,
+  body: { challengeId: register.body.challengeId, code: verificationCode },
+});
+check("the emailed code activates the account", verified.status === 201, JSON.stringify(verified.body));
+const token = verified.body?.token;
+const cookie = cookieFrom(verified.headers);
+check("verification returns a session token", typeof token === "string" && token.length > 20);
+check("verification sets an HttpOnly cookie", Boolean(cookie) && /ew_session=/.test(cookie));
+
+const replayed = await req("/api/v1/auth/register/verify", {
+  method: "POST",
+  origin: ORIGIN,
+  body: { challengeId: register.body.challengeId, code: verificationCode },
+});
+check("a used code cannot be replayed", replayed.status === 401);
 
 const duplicate = await req("/api/v1/auth/register", {
   method: "POST",
   body: { name: "Test Buyer", email, password },
   origin: ORIGIN,
 });
-check("duplicate email is rejected with 409", duplicate.status === 409, `got ${duplicate.status}`);
+check("a verified email cannot be registered again", duplicate.status === 409, `got ${duplicate.status}`);
 
 const weakPassword = await req("/api/v1/auth/register", {
   method: "POST",
@@ -142,43 +223,11 @@ const badLogin = await req("/api/v1/auth/login", {
 });
 check("wrong password returns 401", badLogin.status === 401);
 
-console.log("\nSign-in codes");
+console.log("\nPassword sign-in");
 
-const otpStart = await req("/api/v1/auth/login", {
-  method: "POST",
-  body: { email, password },
-  origin: ORIGIN,
-});
-check(
-  "login asks for a 6-digit code instead of returning a session",
-  otpStart.status === 200 && otpStart.body?.otpRequired === true && typeof otpStart.body?.challengeId === "string",
-  JSON.stringify(otpStart.body),
-);
-check("no session is issued before the code is verified", !otpStart.body?.token && !cookieFrom(otpStart.headers));
-check("demo delivery returns a six digit code", /^[0-9]{6}$/.test(otpStart.body?.demoCode ?? ""));
-
-const wrongCode = otpStart.body?.demoCode === "111111" ? "222222" : "111111";
-const badOtp = await req("/api/v1/auth/otp/verify", {
-  method: "POST",
-  origin: ORIGIN,
-  body: { challengeId: otpStart.body.challengeId, code: wrongCode },
-});
-check("an incorrect code is rejected", badOtp.status === 401 && !badOtp.body?.token, JSON.stringify(badOtp.body));
-
-const login = await req("/api/v1/auth/otp/verify", {
-  method: "POST",
-  origin: ORIGIN,
-  body: { challengeId: otpStart.body.challengeId, code: otpStart.body.demoCode },
-});
-check("the correct code issues a session", login.status === 200 && typeof login.body.token === "string", JSON.stringify(login.body));
-check("verifying the code sets an HttpOnly cookie", /ew_session=/.test(cookieFrom(login.headers) ?? ""));
-
-const replayed = await req("/api/v1/auth/otp/verify", {
-  method: "POST",
-  origin: ORIGIN,
-  body: { challengeId: otpStart.body.challengeId, code: otpStart.body.demoCode },
-});
-check("a used code cannot be replayed", replayed.status === 401);
+const login = await signIn(email, password);
+check("signing in with the correct password issues a session", login.status === 200 && typeof login.body?.token === "string", JSON.stringify(login.body));
+check("sign-in sets an HttpOnly cookie", /ew_session=/.test(cookieFrom(login.headers) ?? ""));
 
 const me = await req("/api/v1/auth/me", { token });
 check("bearer token authenticates", me.status === 200 && me.body.user.email === email);
@@ -328,10 +377,17 @@ check(
   JSON.stringify(history.map((entry) => [entry.actorType, entry.reason])),
 );
 
-const otherUser = await req("/api/v1/auth/register", {
+const otherEmail = `other-${Date.now()}@example.com`;
+const otherSignup = await req("/api/v1/auth/register", {
   method: "POST",
   origin: ORIGIN,
-  body: { name: "Other Buyer", email: `other-${Date.now()}@example.com`, password },
+  body: { name: "Other Buyer", email: otherEmail, password },
+});
+const otherCode = await codeFor(otherEmail);
+const otherUser = await req("/api/v1/auth/register/verify", {
+  method: "POST",
+  origin: ORIGIN,
+  body: { challengeId: otherSignup.body.challengeId, code: otherCode },
 });
 const crossUserOrder = await req(`/api/v1/orders/${orderNumber}`, { token: otherUser.body.token });
 check("customers cannot read another customer's order", crossUserOrder.status === 404);
@@ -342,7 +398,7 @@ check("paid order cancellation is refused", cancelledPaid.status === 409);
 console.log("\nAuthorization & webhooks");
 
 const adminLogin = await signIn(ADMIN_EMAIL, ADMIN_PASSWORD);
-check("admin can sign in with a code", adminLogin.status === 200, JSON.stringify(adminLogin.body));
+check("admin can sign in with a password", adminLogin.status === 200, JSON.stringify(adminLogin.body));
 const adminToken = adminLogin.body?.token;
 
 const forbiddenStats = await req("/api/v1/admin/stats", { token });
@@ -576,6 +632,8 @@ const logout = await req("/api/v1/auth/logout", { method: "POST", cookie, origin
 check("logout succeeds", logout.status === 200);
 const afterLogout = await req("/api/v1/auth/me", { cookie });
 check("revoked session no longer authenticates", afterLogout.status === 401);
+
+await new Promise((resolve) => mailServer.close(resolve));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) {

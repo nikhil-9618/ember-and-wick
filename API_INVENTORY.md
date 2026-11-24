@@ -19,9 +19,9 @@ Error shape: `{ "error": { "code": "…", "message": "…" } }` with codes such 
 | GET | `/products/[slug]` | Product detail with variants, images, rating |
 | GET | `/products/[slug]/reviews` | Published reviews for a product |
 | GET | `/categories` | Categories with product counts |
-| POST | `/auth/register` | Create an account |
-| POST | `/auth/login` | Step 1: check the password and send a 6-digit code (no session yet) |
-| POST | `/auth/otp/verify` | Step 2: exchange the code for a session (sets cookie, returns token) |
+| POST | `/auth/register` | Create an unverified account and email a 6-digit code (no session yet) |
+| POST | `/auth/register/verify` | Verify the emailed code: activates the account and starts its session |
+| POST | `/auth/login` | Password sign-in for a verified account |
 | POST | `/auth/logout` | Revoke the current session |
 | POST | `/contact` | Contact form (rate limited) |
 

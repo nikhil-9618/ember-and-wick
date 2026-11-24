@@ -6,16 +6,13 @@ export interface ApiSession {
   user: User;
 }
 
-/** Returned by /api/v1/auth/login: a code was sent, no session exists yet. */
-export interface OtpChallenge {
-  otpRequired: true;
+/** Returned by /api/v1/auth/register: a code was emailed, no session exists yet. */
+export interface SignupChallenge {
+  verificationRequired: true;
   challengeId: string;
   email: string;
   expiresAt: string;
   expiresInSeconds: number;
-  delivery: "email" | "demo";
-  /** Only present when the server runs with OTP_DEMO_MODE=1. */
-  demoCode?: string;
 }
 
 export interface User {

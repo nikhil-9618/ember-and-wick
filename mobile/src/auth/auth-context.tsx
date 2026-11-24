@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import * as SecureStore from "expo-secure-store";
 import { api, setAuthToken } from "@/api/client";
-import type { ApiSession, OtpChallenge, User } from "@/api/types";
+import type { ApiSession, SignupChallenge, User } from "@/api/types";
 
 const TOKEN_KEY = "emberwick.session.token";
 
@@ -9,11 +9,12 @@ interface AuthValue {
   user: User | null;
   token: string | null;
   booting: boolean;
-  /** Step one of sign-in: checks the password and asks the server to send a code. */
-  requestOtp: (email: string, password: string) => Promise<OtpChallenge>;
-  /** Step two: exchanges the emailed code for a session. */
-  verifyOtp: (challengeId: string, code: string) => Promise<void>;
-  register: (input: { name: string; email: string; password: string; phone?: string }) => Promise<void>;
+  /** Sign in with the password set on a verified account. */
+  signIn: (email: string, password: string) => Promise<void>;
+  /** Step one of sign-up: creates an unverified account and emails a code. */
+  startSignup: (input: { name: string; email: string; password: string; phone?: string }) => Promise<SignupChallenge>;
+  /** Step two: verifies the emailed code and starts the session. */
+  verifySignup: (challengeId: string, code: string) => Promise<void>;
   signOut: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }
@@ -54,12 +55,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const requestOtp = useCallback(async (email: string, password: string) => {
-    return api<OtpChallenge>("/api/v1/auth/login", { method: "POST", body: { email, password } });
+  const signIn = useCallback(async (email: string, password: string) => {
+    const session = await api<ApiSession>("/api/v1/auth/login", {
+      method: "POST",
+      body: { email, password },
+    });
+    await persistToken(session.token);
+    setToken(session.token);
+    setUser(session.user);
   }, []);
 
-  const verifyOtp = useCallback(async (challengeId: string, code: string) => {
-    const session = await api<ApiSession>("/api/v1/auth/otp/verify", {
+  const startSignup = useCallback(
+    async (input: { name: string; email: string; password: string; phone?: string }) => {
+      return api<SignupChallenge>("/api/v1/auth/register", { method: "POST", body: input });
+    },
+    [],
+  );
+
+  const verifySignup = useCallback(async (challengeId: string, code: string) => {
+    const session = await api<ApiSession>("/api/v1/auth/register/verify", {
       method: "POST",
       body: { challengeId, code },
     });
@@ -67,16 +81,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(session.token);
     setUser(session.user);
   }, []);
-
-  const register = useCallback(
-    async (input: { name: string; email: string; password: string; phone?: string }) => {
-      const session = await api<ApiSession>("/api/v1/auth/register", { method: "POST", body: input });
-      await persistToken(session.token);
-      setToken(session.token);
-      setUser(session.user);
-    },
-    [],
-  );
 
   const signOut = useCallback(async () => {
     try {
@@ -99,8 +103,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ user, token, booting, requestOtp, verifyOtp, register, signOut, refreshUser }),
-    [user, token, booting, requestOtp, verifyOtp, register, signOut, refreshUser],
+    () => ({ user, token, booting, signIn, startSignup, verifySignup, signOut, refreshUser }),
+    [user, token, booting, signIn, startSignup, verifySignup, signOut, refreshUser],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

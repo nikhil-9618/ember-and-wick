@@ -78,10 +78,10 @@ const customerHash = await hashPassword(process.env.SEED_CUSTOMER_PASSWORD || "C
 // Two admins so the refund approval threshold (a second pair of eyes) can be
 // exercised locally: one admin requests the refund, the other approves it.
 statements.push(
-  `INSERT OR IGNORE INTO users (id, email, password_hash, name, phone, role, created_at, updated_at) VALUES
-   ('usr_admin', 'admin@emberandwick.in', ${q(adminHash)}, 'Studio Admin', '+91 80 4718 2200', 'admin', ${q(now)}, ${q(now)}),
-   ('usr_manager', 'manager@emberandwick.in', ${q(managerHash)}, 'Studio Manager', '+91 80 4718 2201', 'admin', ${q(now)}, ${q(now)}),
-   ('usr_demo', 'customer@example.com', ${q(customerHash)}, 'Aarav Menon', '+91 98450 11223', 'customer', ${q(now)}, ${q(now)});`,
+  `INSERT OR IGNORE INTO users (id, email, password_hash, name, phone, role, created_at, updated_at, email_verified_at) VALUES
+   ('usr_admin', 'admin@emberandwick.in', ${q(adminHash)}, 'Studio Admin', '+91 80 4718 2200', 'admin', ${q(now)}, ${q(now)}, ${q(now)}),
+   ('usr_manager', 'manager@emberandwick.in', ${q(managerHash)}, 'Studio Manager', '+91 80 4718 2201', 'admin', ${q(now)}, ${q(now)}, ${q(now)}),
+   ('usr_demo', 'customer@example.com', ${q(customerHash)}, 'Aarav Menon', '+91 98450 11223', 'customer', ${q(now)}, ${q(now)}, ${q(now)});`,
 );
 
 for (const category of seed.categories) {

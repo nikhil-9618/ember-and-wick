@@ -38,9 +38,8 @@ Set these in the Sites panel (Preview and Production separately), never in the r
 | `RAZORPAY_WEBHOOK_SECRET` | yes | Webhook HMAC verification |
 | `PAYMENT_PROVIDER` | no | `test` outside production; `demo` for a public demo store (needs `ALLOW_DEMO_PAYMENTS=1`). Omit in a real store |
 | `ALLOW_DEMO_PAYMENTS` | demo only | `1` enables `PAYMENT_PROVIDER=demo`: checkout and refunds are simulated and labelled as such |
-| `OTP_DEMO_MODE` | demo only | `1` shows the sign-in code on screen instead of emailing it |
 | `SEED_DEMO_ACCOUNTS` | demo only | `1` creates the demo admin/manager/customer accounts on the first request |
-| `RESEND_API_KEY` or `BREVO_API_KEY` | live sign-in | Free-tier email delivery for sign-in codes; without one, sign-in returns 503 |
+| `RESEND_API_KEY` or `BREVO_API_KEY` | yes | Free-tier email delivery for sign-up verification codes; without one, sign-up returns 503 |
 | `OTP_FROM_EMAIL` | with Brevo | Verified sender address (Resend defaults to `onboarding@resend.dev`) |
 | `BOOTSTRAP_DB` | first deploy only | `1` applies migrations + catalogue to an empty database |
 | `BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD` | first deploy only | Creates the first admin when bootstrapping |
@@ -68,11 +67,12 @@ categories and two coupons. On the public demo deployment it also holds the demo
 
 ### Demo deployment (preview)
 
-Sign-in is password + emailed one-time code. The demo has no mail provider configured, so it runs
-with `OTP_DEMO_MODE=1` and shows the code on the sign-in screen. Payments run with
-`PAYMENT_PROVIDER=demo` + `ALLOW_DEMO_PAYMENTS=1`: checkout, order placement, cancellation, refunds
-and the refund approval threshold all work end to end, but no money is collected and every screen
-says so.
+Sign-in is password only. A new account must confirm its email address with a six-digit code before
+it can sign in; the code is delivered by Resend or Brevo, so `RESEND_API_KEY` (plus `OTP_FROM_EMAIL`
+for Brevo) must be set in Sites → Secrets for sign-up to work. There is no on-screen code fallback.
+Payments run with `PAYMENT_PROVIDER=demo` + `ALLOW_DEMO_PAYMENTS=1`: checkout, order placement,
+cancellation, refunds and the refund approval threshold all work end to end, but no money is
+collected and every screen says so.
 
 | Role | Email | Password |
 | --- | --- | --- |
@@ -86,8 +86,9 @@ accounts) before the store takes real orders.
 ### Going live
 
 1. Add `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` and `RAZORPAY_WEBHOOK_SECRET`, and unset
-   `PAYMENT_PROVIDER`, `ALLOW_DEMO_PAYMENTS`, `OTP_DEMO_MODE` and `SEED_DEMO_ACCOUNTS`.
-2. Add `RESEND_API_KEY` or `BREVO_API_KEY` (+ `OTP_FROM_EMAIL`) so sign-in codes are emailed.
+   `PAYMENT_PROVIDER`, `ALLOW_DEMO_PAYMENTS` and `SEED_DEMO_ACCOUNTS`.
+2. Add `RESEND_API_KEY` (or `BREVO_API_KEY` + `OTP_FROM_EMAIL`) so sign-up verification codes are
+   emailed. Without it, sign-up is refused with a clear message.
 3. Delete the demo users and rotate `BOOTSTRAP_ADMIN_PASSWORD`.
 4. Point the Razorpay webhook at `https://<domain>/api/v1/payments/webhook`.
 

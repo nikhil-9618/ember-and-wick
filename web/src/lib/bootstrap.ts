@@ -123,9 +123,9 @@ async function applyMigrations(db: D1Database): Promise<void> {
       const hash = await hashPassword(adminPassword);
       await db
         .prepare(
-          "INSERT OR IGNORE INTO users (id, email, password_hash, name, phone, role, created_at, updated_at) VALUES (?, ?, ?, 'Studio Admin', NULL, 'admin', ?, ?)",
+          "INSERT OR IGNORE INTO users (id, email, password_hash, name, phone, role, created_at, updated_at, email_verified_at) VALUES (?, ?, ?, 'Studio Admin', NULL, 'admin', ?, ?, ?)",
         )
-        .bind(randomId("usr"), adminEmail.toLowerCase(), hash, now, now)
+        .bind(randomId("usr"), adminEmail.toLowerCase(), hash, now, now, now)
         .run();
     }
   }
@@ -195,10 +195,10 @@ async function seedDemoAccounts(db: D1Database): Promise<void> {
     const hash = await hashPassword(password);
     await db
       .prepare(
-        `INSERT OR IGNORE INTO users (id, email, password_hash, name, phone, role, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT OR IGNORE INTO users (id, email, password_hash, name, phone, role, created_at, updated_at, email_verified_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .bind(account.id, account.email, hash, account.name, account.phone, account.role, now, now)
+      .bind(account.id, account.email, hash, account.name, account.phone, account.role, now, now, now)
       .run();
   }
 }

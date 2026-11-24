@@ -10,6 +10,7 @@ export type ErrorCode =
   | "payment_not_configured"
   | "email_not_configured"
   | "email_error"
+  | "email_unverified"
   | "internal_error";
 
 export class ApiError extends Error {

@@ -1,15 +1,34 @@
 import { apiRoute, assertSameOrigin, clientIp, json, readJson } from "@/lib/http";
 import { loginSchema } from "@/lib/validation";
-import { startLogin } from "@/lib/services/login-otp";
+import { sessionCookie } from "@/lib/auth";
+import { loginWithPassword } from "@/lib/services/login";
 
 /**
- * Step one of sign-in. A correct password does not create a session; it issues a
- * single-use six-digit code. The client then calls /auth/otp/verify, which is the
- * only place a session cookie or bearer token is minted.
+ * Sign in with the password chosen at sign-up. The email address was verified
+ * once during registration, so no second code is required here.
  */
 export const POST = apiRoute(async (request) => {
   assertSameOrigin(request);
   const input = await readJson(request, loginSchema);
-  const challenge = await startLogin({ email: input.email, password: input.password, ip: clientIp(request) });
-  return json(challenge);
+  const result = await loginWithPassword({
+    email: input.email,
+    password: input.password,
+    ip: clientIp(request),
+    userAgent: request.headers.get("user-agent"),
+  });
+
+  return json(
+    {
+      user: {
+        id: result.user.id,
+        email: result.user.email,
+        name: result.user.name,
+        phone: result.user.phone,
+        role: result.user.role,
+      },
+      token: result.token,
+      expiresAt: result.expiresAt,
+    },
+    { headers: { "Set-Cookie": sessionCookie(result.token, result.expiresAt) } },
+  );
 });
