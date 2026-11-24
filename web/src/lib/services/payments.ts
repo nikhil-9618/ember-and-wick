@@ -66,10 +66,16 @@ export async function markOrderPaid(
   ];
 
   if (payment.providerPaymentId) {
+    // Only the newest attempt carries the provider payment id. Stamping every
+    // attempt for the order would collide with the UNIQUE index on
+    // provider_payment_id as soon as a payment had been retried.
     statements.push(
       db
         .prepare(
-          "UPDATE payments SET provider_payment_id = ?, status = 'captured', method = ?, updated_at = ? WHERE order_id = ? AND status IN ('created','authorized','failed')",
+          `UPDATE payments SET provider_payment_id = ?, status = 'captured', method = ?, updated_at = ?
+            WHERE id = (SELECT id FROM payments
+                         WHERE order_id = ? AND status IN ('created','authorized','failed')
+                         ORDER BY created_at DESC, rowid DESC LIMIT 1)`,
         )
         .bind(payment.providerPaymentId, payment.method ?? null, now, orderId),
     );
@@ -235,18 +241,19 @@ export async function retryPaymentIntent(
         ]),
   ];
 
-  if (config.mode === "test") {
-    const providerOrderId = `test_${order.id}_${randomId("rt").slice(-6)}`;
+  if (config.mode === "test" || config.mode === "demo") {
+    const provider = config.mode;
+    const providerOrderId = `${provider}_${order.id}_${randomId("rt").slice(-6)}`;
     await db.batch([
       db
         .prepare(
           `INSERT INTO payments (id, order_id, provider, provider_order_id, amount, currency, status, created_at, updated_at)
-           VALUES (?, ?, 'test', ?, ?, 'INR', 'created', ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, 'INR', 'created', ?, ?)`,
         )
-        .bind(randomId("pay"), order.id, providerOrderId, order.total, now, now),
+        .bind(randomId("pay"), order.id, provider, providerOrderId, order.total, now, now),
       ...retryStatements,
     ]);
-    return { provider: "test", keyId: null, providerOrderId, amount: order.total, currency: "INR" };
+    return { provider, keyId: null, providerOrderId, amount: order.total, currency: "INR" };
   }
 
   const rzp = await createRazorpayOrder({
@@ -269,17 +276,17 @@ export async function retryPaymentIntent(
   return { provider: "razorpay", keyId: config.keyId, providerOrderId: rzp.id, amount: order.total, currency: "INR" };
 }
 
-/** Test-provider confirmation. Only reachable when payment mode is `test` (never in production). */
+/** Test/demo confirmation. Only reachable in `test` or explicit `demo` mode. */
 export async function confirmTestPayment(userId: string, orderNumber: string): Promise<void> {
   const config = await getPaymentConfig();
-  if (config.mode !== "test") {
-    throw new ApiError("forbidden", "Test payments are disabled.", 403);
+  if (config.mode !== "test" && config.mode !== "demo") {
+    throw new ApiError("forbidden", "Simulated payments are disabled.", 403);
   }
   const order = await loadOrderByNumber(orderNumber);
   if (!order || order.user_id !== userId) throw notFound("Order not found.");
   await markOrderPaid(
     order.id,
-    { providerPaymentId: `test_payment_${order.id}`, method: "test" },
+    { providerPaymentId: `${config.mode}_payment_${order.id}`, method: config.mode },
     { type: "customer", id: userId, label: order.email },
   );
 }

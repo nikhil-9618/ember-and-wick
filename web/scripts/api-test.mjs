@@ -59,6 +59,24 @@ function cookieFrom(headers) {
   return raw.split(";")[0];
 }
 
+/**
+ * Signs in through the two-step flow. With demo delivery the API returns the code
+ * to the caller, so the suite never needs access to an inbox.
+ */
+async function signIn(emailAddress, password) {
+  const started = await req("/api/v1/auth/login", {
+    method: "POST",
+    origin: ORIGIN,
+    body: { email: emailAddress, password },
+  });
+  if (started.status !== 200 || !started.body?.demoCode) return started;
+  return req("/api/v1/auth/otp/verify", {
+    method: "POST",
+    origin: ORIGIN,
+    body: { challengeId: started.body.challengeId, code: started.body.demoCode },
+  });
+}
+
 const email = `test-${Date.now()}-${Math.floor(Math.random() * 1000)}@example.com`;
 const password = "TestPass123!";
 const ORIGIN = BASE;
@@ -124,12 +142,43 @@ const badLogin = await req("/api/v1/auth/login", {
 });
 check("wrong password returns 401", badLogin.status === 401);
 
-const login = await req("/api/v1/auth/login", {
+console.log("\nSign-in codes");
+
+const otpStart = await req("/api/v1/auth/login", {
   method: "POST",
   body: { email, password },
   origin: ORIGIN,
 });
-check("login returns a fresh session", login.status === 200 && typeof login.body.token === "string");
+check(
+  "login asks for a 6-digit code instead of returning a session",
+  otpStart.status === 200 && otpStart.body?.otpRequired === true && typeof otpStart.body?.challengeId === "string",
+  JSON.stringify(otpStart.body),
+);
+check("no session is issued before the code is verified", !otpStart.body?.token && !cookieFrom(otpStart.headers));
+check("demo delivery returns a six digit code", /^[0-9]{6}$/.test(otpStart.body?.demoCode ?? ""));
+
+const wrongCode = otpStart.body?.demoCode === "111111" ? "222222" : "111111";
+const badOtp = await req("/api/v1/auth/otp/verify", {
+  method: "POST",
+  origin: ORIGIN,
+  body: { challengeId: otpStart.body.challengeId, code: wrongCode },
+});
+check("an incorrect code is rejected", badOtp.status === 401 && !badOtp.body?.token, JSON.stringify(badOtp.body));
+
+const login = await req("/api/v1/auth/otp/verify", {
+  method: "POST",
+  origin: ORIGIN,
+  body: { challengeId: otpStart.body.challengeId, code: otpStart.body.demoCode },
+});
+check("the correct code issues a session", login.status === 200 && typeof login.body.token === "string", JSON.stringify(login.body));
+check("verifying the code sets an HttpOnly cookie", /ew_session=/.test(cookieFrom(login.headers) ?? ""));
+
+const replayed = await req("/api/v1/auth/otp/verify", {
+  method: "POST",
+  origin: ORIGIN,
+  body: { challengeId: otpStart.body.challengeId, code: otpStart.body.demoCode },
+});
+check("a used code cannot be replayed", replayed.status === 401);
 
 const me = await req("/api/v1/auth/me", { token });
 check("bearer token authenticates", me.status === 200 && me.body.user.email === email);
@@ -237,6 +286,32 @@ check("paid order cannot be cancelled by the customer", paidOrder.body.order.can
 const confirmAgain = await req("/api/v1/payments/test-confirm", { method: "POST", token, origin: ORIGIN, body: { orderNumber } });
 check("repeat confirmation is idempotent", confirmAgain.status === 200);
 
+// A retried payment leaves two payment rows for one order; confirming must still
+// settle it instead of colliding on the unique provider payment id.
+await req("/api/v1/cart", { method: "POST", token, origin: ORIGIN, body: { variantId, quantity: 1 } });
+const retryOrder = await req("/api/v1/orders", {
+  method: "POST",
+  token,
+  origin: ORIGIN,
+  body: { address, idempotencyKey: `${idempotencyKey}-retry` },
+});
+const retryNumber = retryOrder.body?.order?.number;
+const retryIntent = await req(`/api/v1/orders/${retryNumber}/retry-payment`, { method: "POST", token, origin: ORIGIN });
+check(
+  "a pending order can start a second payment attempt",
+  retryIntent.status === 200 && retryIntent.body?.payment?.provider === "test",
+  JSON.stringify(retryIntent.body),
+);
+const retryConfirm = await req("/api/v1/payments/test-confirm", {
+  method: "POST",
+  token,
+  origin: ORIGIN,
+  body: { orderNumber: retryNumber },
+});
+check("confirming after a retry settles the order", retryConfirm.status === 200, JSON.stringify(retryConfirm.body));
+const retryPaid = await req(`/api/v1/orders/${retryNumber}`, { token });
+check("the retried order is paid once", retryPaid.body?.order?.paymentStatus === "paid");
+
 const notifications = await req("/api/v1/notifications", { token });
 check("payment creates a customer notification", notifications.body.items.some((item) => item.type === "order_paid"));
 
@@ -266,8 +341,8 @@ check("paid order cancellation is refused", cancelledPaid.status === 409);
 
 console.log("\nAuthorization & webhooks");
 
-const adminLogin = await req("/api/v1/auth/login", { method: "POST", origin: ORIGIN, body: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD } });
-check("admin can sign in", adminLogin.status === 200, JSON.stringify(adminLogin.body));
+const adminLogin = await signIn(ADMIN_EMAIL, ADMIN_PASSWORD);
+check("admin can sign in with a code", adminLogin.status === 200, JSON.stringify(adminLogin.body));
 const adminToken = adminLogin.body?.token;
 
 const forbiddenStats = await req("/api/v1/admin/stats", { token });
@@ -334,11 +409,7 @@ console.log("\nRefund approval");
 
 const MANAGER_EMAIL = process.env.MANAGER_EMAIL ?? "manager@emberandwick.in";
 const MANAGER_PASSWORD = process.env.MANAGER_PASSWORD ?? "ManagerPass123!";
-const managerLogin = await req("/api/v1/auth/login", {
-  method: "POST",
-  origin: ORIGIN,
-  body: { email: MANAGER_EMAIL, password: MANAGER_PASSWORD },
-});
+const managerLogin = await signIn(MANAGER_EMAIL, MANAGER_PASSWORD);
 const managerToken = managerLogin.body?.token;
 check("second admin can sign in", managerLogin.status === 200 && Boolean(managerToken), JSON.stringify(managerLogin.body));
 
