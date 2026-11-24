@@ -16,7 +16,7 @@ State as of 22 November 2026. `[x]` = done and verified. `[ ]` = outstanding.
 
 ## Security
 
-- [x] Passwords hashed with PBKDF2-SHA256 (210k iterations)
+- [x] Passwords hashed with PBKDF2-SHA256, 100k iterations (Cloudflare Workers rejects anything above 100k)
 - [x] Sessions stored hashed; tokens revoked on logout
 - [x] HttpOnly + SameSite cookies on web, SecureStore on mobile
 - [x] Admin endpoints role-checked server-side (tested with a customer token)

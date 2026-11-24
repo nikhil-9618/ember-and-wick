@@ -8,6 +8,12 @@ describe("password hashing", () => {
     expect(hash.split("$")).toHaveLength(5);
   });
 
+  it("stays within the Workers PBKDF2 ceiling", async () => {
+    const hash = await hashPassword("CorrectHorse123");
+    const iterations = Number(hash.split("$")[2]);
+    expect(iterations).toBe(100_000);
+  });
+
   it("never stores the plaintext", async () => {
     const hash = await hashPassword("CorrectHorse123");
     expect(hash).not.toContain("CorrectHorse123");

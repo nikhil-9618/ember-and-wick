@@ -5,8 +5,14 @@ import { base64, pbkdf2Hash, timingSafeEqual } from "./crypto";
  * React Native-compatible runtimes, so no native bcrypt build is required.
  *
  * Stored format: pbkdf2$sha256$<iterations>$<salt>$<hash>
+ *
+ * 100,000 is the highest iteration count Cloudflare Workers accepts
+ * ("Pbkdf2 failed: iteration counts above 100000 are not supported"). Higher
+ * counts throw at runtime on the deployed Worker, which previously broke every
+ * password hash and therefore the whole database bootstrap. The count is stored
+ * in each hash, so hashes written with a lower count keep verifying.
  */
-const ITERATIONS = 210_000;
+const ITERATIONS = 100_000;
 const ALGORITHM = "sha256";
 
 export async function hashPassword(password: string): Promise<string> {

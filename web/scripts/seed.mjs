@@ -19,7 +19,9 @@ const root = join(here, "..");
 const reset = process.argv.includes("--reset");
 const seed = JSON.parse(readFileSync(join(root, "src", "lib", "seed-data.json"), "utf8"));
 
-const ITERATIONS = 210_000;
+// Cloudflare Workers rejects PBKDF2 above 100,000 iterations, so deployed hashes
+// must stay at or below that ceiling.
+const ITERATIONS = 100_000;
 
 function b64url(bytes) {
   return Buffer.from(bytes).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
