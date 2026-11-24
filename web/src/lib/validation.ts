@@ -32,6 +32,14 @@ export const loginSchema = z.object({
   password: z.string().min(1, "Enter your password.").max(128),
 });
 
+export const otpVerifySchema = z.object({
+  challengeId: z.string().trim().min(10, "Start the sign-in again.").max(100),
+  code: z
+    .string()
+    .trim()
+    .regex(/^[0-9]{6}$/, "Enter the 6-digit code from your email."),
+});
+
 export const updateProfileSchema = z.object({
   name: z.string().trim().min(2).max(80).optional(),
   phone: phone.optional().or(z.literal("")).nullable(),
@@ -202,6 +210,7 @@ export const cancelOrderSchema = z.object({
 });
 
 export type RegisterInput = z.infer<typeof registerSchema>;
+export type OtpVerifyInput = z.infer<typeof otpVerifySchema>;
 export type AddressInput = z.infer<typeof addressSchema>;
 export type CheckoutInput = z.infer<typeof checkoutSchema>;
 export type AdminProductInput = z.infer<typeof adminProductSchema>;

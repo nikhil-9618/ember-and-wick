@@ -19,7 +19,9 @@ export default async function LoginPage({
       <div className="w-full max-w-sm">
         <p className="eyebrow">Welcome back</p>
         <h1 className="mt-3 text-3xl">Sign in</h1>
-        <p className="mt-2 text-sm text-ink-soft">Your cart, wishlist and orders are waiting.</p>
+        <p className="mt-2 text-sm text-ink-soft">
+          Sign in with your password, then confirm the one-time code we send you.
+        </p>
         <div className="mt-8">
           <AuthForm mode="login" next={next && next.startsWith("/") ? next : "/account"} />
         </div>

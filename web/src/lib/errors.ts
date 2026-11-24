@@ -8,6 +8,8 @@ export type ErrorCode =
   | "out_of_stock"
   | "payment_error"
   | "payment_not_configured"
+  | "email_not_configured"
+  | "email_error"
   | "internal_error";
 
 export class ApiError extends Error {

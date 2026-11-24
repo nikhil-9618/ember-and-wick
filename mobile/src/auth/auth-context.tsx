@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import * as SecureStore from "expo-secure-store";
 import { api, setAuthToken } from "@/api/client";
-import type { ApiSession, User } from "@/api/types";
+import type { ApiSession, OtpChallenge, User } from "@/api/types";
 
 const TOKEN_KEY = "emberwick.session.token";
 
@@ -9,7 +9,10 @@ interface AuthValue {
   user: User | null;
   token: string | null;
   booting: boolean;
-  signIn: (email: string, password: string) => Promise<void>;
+  /** Step one of sign-in: checks the password and asks the server to send a code. */
+  requestOtp: (email: string, password: string) => Promise<OtpChallenge>;
+  /** Step two: exchanges the emailed code for a session. */
+  verifyOtp: (challengeId: string, code: string) => Promise<void>;
   register: (input: { name: string; email: string; password: string; phone?: string }) => Promise<void>;
   signOut: () => Promise<void>;
   refreshUser: () => Promise<void>;
@@ -51,10 +54,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const signIn = useCallback(async (email: string, password: string) => {
-    const session = await api<ApiSession>("/api/v1/auth/login", {
+  const requestOtp = useCallback(async (email: string, password: string) => {
+    return api<OtpChallenge>("/api/v1/auth/login", { method: "POST", body: { email, password } });
+  }, []);
+
+  const verifyOtp = useCallback(async (challengeId: string, code: string) => {
+    const session = await api<ApiSession>("/api/v1/auth/otp/verify", {
       method: "POST",
-      body: { email, password },
+      body: { challengeId, code },
     });
     await persistToken(session.token);
     setToken(session.token);
@@ -92,8 +99,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ user, token, booting, signIn, register, signOut, refreshUser }),
-    [user, token, booting, signIn, register, signOut, refreshUser],
+    () => ({ user, token, booting, requestOtp, verifyOtp, register, signOut, refreshUser }),
+    [user, token, booting, requestOtp, verifyOtp, register, signOut, refreshUser],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
