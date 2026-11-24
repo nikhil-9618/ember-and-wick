@@ -1,4 +1,5 @@
 import { getEnv } from "./db";
+import { refundApprovalThreshold } from "./refunds";
 
 export type PaymentMode = "razorpay" | "test" | "unconfigured";
 
@@ -48,4 +49,14 @@ export async function getAppUrl(): Promise<string> {
 export async function isProduction(): Promise<boolean> {
   const env = await getEnv();
   return (readEnv(env, "NODE_ENV") ?? "production") === "production";
+}
+
+export interface RefundPolicy {
+  /** Refunds at or above this amount need a second admin's approval. */
+  approvalThresholdPaise: number;
+}
+
+export async function getRefundPolicy(): Promise<RefundPolicy> {
+  const env = await getEnv();
+  return { approvalThresholdPaise: refundApprovalThreshold(env) };
 }

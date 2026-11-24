@@ -5,6 +5,7 @@ import { reviewModerationSchema } from "@/lib/validation";
 import { notFound } from "@/lib/errors";
 import { requireAdmin } from "@/lib/auth";
 import { refreshProductRating } from "@/lib/services/catalog";
+import { auditActor, recordAudit } from "@/lib/services/audit";
 
 export const GET = apiRoute(async (request) => {
   await requireAdmin(request);
@@ -24,7 +25,7 @@ export const GET = apiRoute(async (request) => {
 
 export const PATCH = apiRoute(async (request) => {
   assertSameOrigin(request);
-  await requireAdmin(request);
+  const auth = await requireAdmin(request);
   const input = await readJson(
     request,
     reviewModerationSchema.extend({ reviewId: z.string().min(3).max(80) }),
@@ -39,6 +40,14 @@ export const PATCH = apiRoute(async (request) => {
 
   await db.prepare("UPDATE reviews SET status = ? WHERE id = ?").bind(input.status, review.id).run();
   await refreshProductRating(review.product_id);
+  await recordAudit({
+    actor: auditActor(auth),
+    action: "review.moderated",
+    entityType: "review",
+    entityId: review.id,
+    summary: `Review ${review.id} marked ${input.status}`,
+    detail: { productId: review.product_id, status: input.status },
+  });
 
   return json({ ok: true });
 });

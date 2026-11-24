@@ -4,6 +4,7 @@ import { assertSameOrigin, apiRoute, json, readJson } from "@/lib/http";
 import { adminProductSchema } from "@/lib/validation";
 import { conflict } from "@/lib/errors";
 import { requireAdmin } from "@/lib/auth";
+import { auditActor, auditStatement } from "@/lib/services/audit";
 
 export const GET = apiRoute(async (request) => {
   await requireAdmin(request);
@@ -34,7 +35,7 @@ export const GET = apiRoute(async (request) => {
 
 export const POST = apiRoute(async (request) => {
   assertSameOrigin(request);
-  await requireAdmin(request);
+  const auth = await requireAdmin(request);
   const input = await readJson(request, adminProductSchema);
   const db = await getDb();
 
@@ -91,6 +92,14 @@ export const POST = apiRoute(async (request) => {
         .prepare("INSERT INTO product_images (id, product_id, url, alt, position) VALUES (?, ?, ?, ?, ?)")
         .bind(randomId("img"), productId, image.url, image.alt, index),
     ),
+    auditStatement(db, {
+      actor: auditActor(auth),
+      action: "product.created",
+      entityType: "product",
+      entityId: productId,
+      summary: `Created product ${input.name} (${input.slug}) as ${input.status}`,
+      detail: { variants: input.variants.length, basePrice: input.basePrice },
+    }),
   ];
 
   try {

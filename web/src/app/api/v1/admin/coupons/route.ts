@@ -4,6 +4,7 @@ import { assertSameOrigin, apiRoute, json, readJson } from "@/lib/http";
 import { couponSchema } from "@/lib/validation";
 import { conflict } from "@/lib/errors";
 import { requireAdmin } from "@/lib/auth";
+import { auditActor, recordAudit } from "@/lib/services/audit";
 
 export const GET = apiRoute(async (request) => {
   await requireAdmin(request);
@@ -17,7 +18,7 @@ export const GET = apiRoute(async (request) => {
 
 export const POST = apiRoute(async (request) => {
   assertSameOrigin(request);
-  await requireAdmin(request);
+  const auth = await requireAdmin(request);
   const input = await readJson(request, couponSchema);
   const db = await getDb();
 
@@ -62,6 +63,15 @@ export const POST = apiRoute(async (request) => {
     if (/UNIQUE constraint failed/i.test(message)) throw conflict("That coupon code already exists.");
     throw error;
   }
+
+  await recordAudit({
+    actor: auditActor(auth),
+    action: "coupon.created",
+    entityType: "coupon",
+    entityId: id,
+    summary: `Created coupon ${input.code} (${input.type} ${input.value})`,
+    detail: { usageLimit: input.usageLimit ?? null, minSubtotal: input.minSubtotal, isActive: input.isActive },
+  });
 
   return json({ id, code: input.code }, { status: 201 });
 });

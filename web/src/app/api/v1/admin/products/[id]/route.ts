@@ -4,6 +4,7 @@ import { assertSameOrigin, apiRoute, json, readJson } from "@/lib/http";
 import { adminProductSchema } from "@/lib/validation";
 import { conflict, notFound } from "@/lib/errors";
 import { requireAdmin } from "@/lib/auth";
+import { auditActor, auditStatement, recordAudit } from "@/lib/services/audit";
 
 const updateSchema = adminProductSchema.omit({ variants: true }).partial();
 
@@ -25,7 +26,7 @@ const COLUMN_MAP: Record<string, string> = {
 
 export const PATCH = apiRoute<{ params: Promise<{ id: string }> }>(async (request, { params }) => {
   assertSameOrigin(request);
-  await requireAdmin(request);
+  const auth = await requireAdmin(request);
   const { id } = await params;
   const input = await readJson(request, updateSchema);
   const db = await getDb();
@@ -70,6 +71,17 @@ export const PATCH = apiRoute<{ params: Promise<{ id: string }> }>(async (reques
 
   if (statements.length === 0) return json({ ok: true, unchanged: true });
 
+  statements.push(
+    auditStatement(db, {
+      actor: auditActor(auth),
+      action: "product.updated",
+      entityType: "product",
+      entityId: id,
+      summary: `Updated product ${id}`,
+      detail: { fields: Object.keys(input) },
+    }),
+  );
+
   try {
     await db.batch(statements);
   } catch (error) {
@@ -83,7 +95,7 @@ export const PATCH = apiRoute<{ params: Promise<{ id: string }> }>(async (reques
 
 export const DELETE = apiRoute<{ params: Promise<{ id: string }> }>(async (request, { params }) => {
   assertSameOrigin(request);
-  await requireAdmin(request);
+  const auth = await requireAdmin(request);
   const { id } = await params;
   const db = await getDb();
   const changed = await db
@@ -91,5 +103,12 @@ export const DELETE = apiRoute<{ params: Promise<{ id: string }> }>(async (reque
     .bind(new Date().toISOString(), id)
     .run();
   if ((changed.meta.changes ?? 0) === 0) throw notFound("Product not found.");
+  await recordAudit({
+    actor: auditActor(auth),
+    action: "product.archived",
+    entityType: "product",
+    entityId: id,
+    summary: `Archived product ${id}`,
+  });
   return json({ ok: true });
 });

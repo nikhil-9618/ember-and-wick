@@ -240,6 +240,19 @@ check("repeat confirmation is idempotent", confirmAgain.status === 200);
 const notifications = await req("/api/v1/notifications", { token });
 check("payment creates a customer notification", notifications.body.items.some((item) => item.type === "order_paid"));
 
+const history = paidOrder.body.order.statusHistory ?? [];
+check("order records who changed its status and why", history.length >= 2, `entries ${history.length}`);
+check(
+  "history starts at pending_payment and ends at paid",
+  history[0]?.fromStatus === null && history[0]?.toStatus === "pending_payment" && history.at(-1)?.toStatus === "paid",
+  JSON.stringify(history.map((entry) => entry.toStatus)),
+);
+check(
+  "history names the customer as the actor",
+  history.every((entry) => entry.actorType === "customer" && entry.reason),
+  JSON.stringify(history.map((entry) => [entry.actorType, entry.reason])),
+);
+
 const otherUser = await req("/api/v1/auth/register", {
   method: "POST",
   origin: ORIGIN,
@@ -274,6 +287,157 @@ const adminRefundNoPayment = await req("/api/v1/admin/refunds", {
   body: { orderId: "EW-DOES-NOT-EXIST", amount: 100, reason: "test refund attempt" },
 });
 check("refund on unknown order is rejected", adminRefundNoPayment.status === 404);
+
+const ledger = await req(`/api/v1/admin/variants/${variantId}/movements`, { token: adminToken });
+check(
+  "stock ledger records the order reservation",
+  ledger.status === 200 && ledger.body.movements.some((m) => m.reason === "order_reserved" && m.delta === -2),
+  JSON.stringify(ledger.body?.movements?.slice(0, 2)),
+);
+const customerLedger = await req(`/api/v1/admin/variants/${variantId}/movements`, { token });
+check("customer cannot read the stock ledger", customerLedger.status === 403);
+
+console.log("\nAdmin order changes");
+
+const advance = await req(`/api/v1/admin/orders/${orderNumber}`, {
+  method: "PATCH",
+  token: adminToken,
+  origin: ORIGIN,
+  body: { status: "processing", note: "Moved to the packing bench" },
+});
+check("admin can advance an order", advance.status === 200 && advance.body.order.status === "processing", JSON.stringify(advance.body));
+const adminEntry = (advance.body.order.statusHistory ?? []).at(-1);
+check(
+  "admin status change records the actor and the reason",
+  adminEntry?.toStatus === "processing" && adminEntry?.actorType === "admin" && adminEntry?.actorLabel === ADMIN_EMAIL && adminEntry?.reason === "Moved to the packing bench",
+  JSON.stringify(adminEntry),
+);
+
+const badTransition = await req(`/api/v1/admin/orders/${orderNumber}`, {
+  method: "PATCH",
+  token: adminToken,
+  origin: ORIGIN,
+  body: { status: "delivered" },
+});
+check("an invalid status transition is refused", badTransition.status === 409, `got ${badTransition.status}`);
+
+const orderAudit = await req("/api/v1/admin/audit?entityType=order&action=order.status_changed", { token: adminToken });
+check(
+  "admin status change is written to the audit log",
+  (orderAudit.body?.entries ?? []).some((entry) => entry.summary.startsWith(orderNumber)),
+  JSON.stringify(orderAudit.body?.entries?.slice(0, 1)),
+);
+
+const orderStatusBeforeRefund = advance.body.order.status;
+
+console.log("\nRefund approval");
+
+const MANAGER_EMAIL = process.env.MANAGER_EMAIL ?? "manager@emberandwick.in";
+const MANAGER_PASSWORD = process.env.MANAGER_PASSWORD ?? "ManagerPass123!";
+const managerLogin = await req("/api/v1/auth/login", {
+  method: "POST",
+  origin: ORIGIN,
+  body: { email: MANAGER_EMAIL, password: MANAGER_PASSWORD },
+});
+const managerToken = managerLogin.body?.token;
+check("second admin can sign in", managerLogin.status === 200 && Boolean(managerToken), JSON.stringify(managerLogin.body));
+
+const refundList = await req("/api/v1/admin/refunds", { token: adminToken });
+const threshold = refundList.body?.refundPolicy?.approvalThresholdPaise;
+check("refund list exposes the approval threshold", typeof threshold === "number" && threshold >= 0, String(threshold));
+
+const orderTotal = order.body.order.total;
+if (typeof threshold === "number" && threshold > 100) {
+  const smallRefund = await req("/api/v1/admin/refunds", {
+    method: "POST",
+    token: adminToken,
+    origin: ORIGIN,
+    body: { orderId: orderNumber, amount: 100, reason: "Goodwill adjustment for a scuffed lid" },
+  });
+  check("refund below the threshold is issued immediately", smallRefund.status === 201, JSON.stringify(smallRefund.body));
+  check("small refund completes without a second approval", smallRefund.body?.requiresApproval === false);
+
+  const partiallyRefunded = await req(`/api/v1/orders/${orderNumber}`, { token });
+  check(
+    "partial refund keeps the order lifecycle intact",
+    partiallyRefunded.body.order.paymentStatus === "partially_refunded" &&
+      partiallyRefunded.body.order.status === orderStatusBeforeRefund,
+    `${partiallyRefunded.body.order.status}/${partiallyRefunded.body.order.paymentStatus}`,
+  );
+} else {
+  console.log("  skip low-refund test — the approval threshold is at or below ₹1");
+}
+
+const remaining = orderTotal - 100;
+if (typeof threshold === "number" && remaining >= threshold && threshold > 0) {
+  const requestKey = `refund-${Date.now()}`;
+  const heldRefund = await req("/api/v1/admin/refunds", {
+    method: "POST",
+    token: adminToken,
+    origin: ORIGIN,
+    body: { orderId: orderNumber, amount: remaining, reason: "Customer returned the full order", requestKey },
+  });
+  check("refund at the threshold is held for approval", heldRefund.status === 202, JSON.stringify(heldRefund.body));
+  check("held refund reports requiresApproval", heldRefund.body?.requiresApproval === true && heldRefund.body?.status === "requested");
+  const heldId = heldRefund.body?.id;
+
+  const duplicateRequest = await req("/api/v1/admin/refunds", {
+    method: "POST",
+    token: adminToken,
+    origin: ORIGIN,
+    body: { orderId: orderNumber, amount: remaining, reason: "Customer returned the full order", requestKey },
+  });
+  check(
+    "a repeated request key returns the same refund instead of a second one",
+    duplicateRequest.status === 200 && duplicateRequest.body?.duplicate === true && duplicateRequest.body?.id === heldId,
+    JSON.stringify(duplicateRequest.body),
+  );
+
+  const selfApproval = await req(`/api/v1/admin/refunds/${heldId}/approve`, {
+    method: "POST",
+    token: adminToken,
+    origin: ORIGIN,
+  });
+  check("the requesting admin cannot approve their own refund", selfApproval.status === 403, `got ${selfApproval.status}`);
+
+  const approval = await req(`/api/v1/admin/refunds/${heldId}/approve`, {
+    method: "POST",
+    token: managerToken,
+    origin: ORIGIN,
+  });
+  check("a different admin can approve the refund", approval.status === 200, JSON.stringify(approval.body));
+  check("approved refund completes in test mode", approval.body?.status === "completed", JSON.stringify(approval.body));
+
+  const secondApproval = await req(`/api/v1/admin/refunds/${heldId}/approve`, {
+    method: "POST",
+    token: managerToken,
+    origin: ORIGIN,
+  });
+  check("approving twice is refused, so money cannot move twice", secondApproval.status === 409, `got ${secondApproval.status}`);
+
+  const fullyRefundedOrder = await req(`/api/v1/orders/${orderNumber}`, { token });
+  check(
+    "full refund marks the order refunded",
+    fullyRefundedOrder.body.order.status === "refunded" && fullyRefundedOrder.body.order.paymentStatus === "refunded",
+    `${fullyRefundedOrder.body.order.status}/${fullyRefundedOrder.body.order.paymentStatus}`,
+  );
+  const refundHistory = fullyRefundedOrder.body.order.statusHistory ?? [];
+  check(
+    "refund is recorded in the order history by the approving admin",
+    refundHistory.some((entry) => entry.toStatus === "refunded" && entry.actorType === "admin" && entry.actorLabel === MANAGER_EMAIL),
+    JSON.stringify(refundHistory.at(-1)),
+  );
+
+  const audit = await req("/api/v1/admin/audit?entityType=refund", { token: adminToken });
+  const auditActions = (audit.body?.entries ?? []).map((entry) => entry.action);
+  check("admin audit log records the refund request", auditActions.includes("refund.requested"), JSON.stringify(auditActions));
+  check("admin audit log records the approval", auditActions.includes("refund.approved"), JSON.stringify(auditActions));
+  check("admin audit log records the completion", auditActions.includes("refund.completed"), JSON.stringify(auditActions));
+  const customerAudit = await req("/api/v1/admin/audit", { token });
+  check("customer cannot read the audit log", customerAudit.status === 403);
+} else {
+  console.log("  skip approval tests — the order total is below the approval threshold");
+}
 
 if (!WEBHOOK_SECRET) {
   console.log("  skip webhook signature tests — RAZORPAY_WEBHOOK_SECRET is not set");

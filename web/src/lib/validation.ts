@@ -189,6 +189,8 @@ export const refundSchema = z.object({
   orderId: z.string().min(3).max(80),
   amount: z.number().int().min(1),
   reason: z.string().trim().min(5).max(300),
+  /** Optional client key so a retried submission cannot issue a second refund. */
+  requestKey: z.string().trim().min(8).max(100).optional(),
 });
 
 export const reviewModerationSchema = z.object({
