@@ -86,3 +86,70 @@
   font-weight: 500;
   color: var(--color-ink-soft);
 }
+
+/* One quiet entrance for every page and route change. */
+@keyframes page-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.page-enter {
+  animation: page-in 280ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+/* Links and buttons respond immediately, without bounce or overshoot. */
+a,
+button {
+  transition:
+    color 160ms ease,
+    background-color 160ms ease,
+    border-color 160ms ease,
+    opacity 160ms ease,
+    transform 120ms ease;
+}
+
+button:active:not(:disabled) {
+  transform: translateY(0.5px);
+}
+
+.nav-link {
+  position: relative;
+}
+
+.nav-link::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -0.35rem;
+  height: 1px;
+  background: currentColor;
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 220ms ease;
+}
+
+.nav-link:hover::after,
+.nav-link:focus-visible::after {
+  transform: scaleX(1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-enter {
+    animation: none;
+  }
+
+  .nav-link::after {
+    transition: none;
+  }
+
+  button:active:not(:disabled) {
+    transform: none;
+  }
+}

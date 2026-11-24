@@ -39,7 +39,7 @@ export async function SiteHeader() {
             <Link
               key={item.href}
               href={item.href}
-              className="text-[0.8125rem] text-ink-soft transition-colors hover:text-ink"
+              className="nav-link text-[0.8125rem] text-ink-soft transition-colors hover:text-ink"
             >
               {item.label}
             </Link>

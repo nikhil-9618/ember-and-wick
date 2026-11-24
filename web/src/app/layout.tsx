@@ -3,6 +3,7 @@ import { Fraunces, Inter } from "next/font/google";
 import "./globals.css";
 import { SiteHeader } from "@/components/site/site-header";
 import { SiteFooter } from "@/components/site/site-footer";
+import { RouteTransition } from "@/components/site/route-transition";
 import { BRAND } from "@/lib/brand";
 
 const fraunces = Fraunces({ subsets: ["latin"], variable: "--font-fraunces", display: "swap" });
@@ -55,7 +56,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         </a>
         <SiteHeader />
         <main id="main" className="flex-1">
-          {children}
+          <RouteTransition>{children}</RouteTransition>
         </main>
         <SiteFooter />
       </body>
