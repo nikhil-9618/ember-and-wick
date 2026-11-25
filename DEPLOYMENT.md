@@ -4,8 +4,13 @@
 
 | Environment | URL | State |
 | --- | --- | --- |
-| Preview (public demo) | https://ember-amp-wick-bw6y8l-preview.freebuff.site | Deployed and serving (Workers + D1), demo accounts seeded, simulated payments |
-| Production | not published | Requires owner approval and real keys |
+| Vercel production | https://ember-and-wick.vercel.app | Deployed from `main` (root directory `web`). App shell serves; **waiting on `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN`** before pages can read data |
+| Preview (Cloudflare demo) | https://ember-amp-wick-bw6y8l-preview.freebuff.site | Older build, Workers + D1, still has the removed demo payment switch. Do not treat as current |
+
+Vercel project `ember-and-wick` (`prj_6yAVP5eB41YkYiFh2AS1rpEx5HwR`). Environment already set for production and
+preview: `NEXT_PUBLIC_APP_URL`, `APP_ORIGIN`, `OTP_FROM_EMAIL=noreply@emberandwick.com`, `EMAIL_FROM_NAME`,
+`EMAIL_REPLY_TO=hello@emberandwick.com`, `BOOTSTRAP_DB=1`. Still missing: the database pair, a mail provider key,
+and the Razorpay keys.
 
 Deployments are made with the Sites tooling (`sites_prepare_next` → `sites_deploy`), which builds the
 Next app with OpenNext and uploads the Worker plus static assets. The Worker serves `/api/v1/*` first
