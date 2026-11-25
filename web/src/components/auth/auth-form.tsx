@@ -309,6 +309,14 @@ export function AuthForm({ mode, next }: Props) {
         {state === "sending" ? "Please wait…" : mode === "register" ? "Send verification code" : "Sign in"}
       </button>
 
+      {mode === "login" ? (
+        <p className="text-center text-xs text-ink-soft">
+          <Link href="/forgot-password" className="text-clay underline underline-offset-4">
+            Forgot your password?
+          </Link>
+        </p>
+      ) : null}
+
       <p className="text-center text-xs text-ink-soft">
         {mode === "register" ? (
           <>

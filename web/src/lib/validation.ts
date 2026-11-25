@@ -50,6 +50,19 @@ export const changePasswordSchema = z.object({
   newPassword: passwordSchema,
 });
 
+export const forgotPasswordSchema = z.object({
+  email,
+});
+
+export const resetPasswordSchema = z.object({
+  challengeId: z.string().trim().min(10, "Start the reset again.").max(100),
+  code: z
+    .string()
+    .trim()
+    .regex(/^[0-9]{6}$/, "Enter the 6-digit code from your email."),
+  newPassword: passwordSchema,
+});
+
 export const addressSchema = z.object({
   label: z.string().trim().max(40).optional().or(z.literal("")),
   fullName: z.string().trim().min(2, "Full name is required.").max(80),

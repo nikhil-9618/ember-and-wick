@@ -328,3 +328,15 @@ export interface SignupOtpChallengeDoc {
   expires_at: string;
   consumed_at: string | null;
 }
+
+export interface PasswordResetChallengeDoc {
+  _id: string;
+  user_id: string | null;
+  email: string;
+  code_hash: string;
+  attempts: number;
+  ip: string | null;
+  issued_at: string;
+  expires_at: string;
+  consumed_at: string | null;
+}

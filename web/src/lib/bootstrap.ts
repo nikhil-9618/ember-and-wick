@@ -3,7 +3,7 @@ import { hashPassword } from "./password";
 import type { Store } from "./db";
 import seed from "./seed-data.json";
 
-const INDEX_VERSION = "mongo-1";
+const INDEX_VERSION = "mongo-2";
 
 let bootstrapPromise: Promise<void> | null = null;
 
@@ -64,6 +64,8 @@ async function ensureIndexes(store: Store): Promise<void> {
   await store.inventory_movements.createIndex({ reference_type: 1, reference_id: 1 });
   await store.signup_otp_challenges.createIndex({ user_id: 1, issued_at: 1 });
   await store.signup_otp_challenges.createIndex({ email: 1, issued_at: 1 });
+  await store.password_reset_challenges.createIndex({ user_id: 1, issued_at: 1 });
+  await store.password_reset_challenges.createIndex({ email: 1, issued_at: 1 });
   await store.device_tokens.createIndex({ token: 1 }, { unique: true });
   await store.device_tokens.createIndex({ user_id: 1 });
   await store.rate_limits.createIndex({ window_start: 1 });

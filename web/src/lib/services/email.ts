@@ -96,7 +96,13 @@ export async function emailConfigured(): Promise<boolean> {
   return (await emailConfigIssue()) === null;
 }
 
-function verificationEmail(code: string): { subject: string; text: string; html: string } {
+interface Mail {
+  subject: string;
+  text: string;
+  html: string;
+}
+
+function verificationEmail(code: string): Mail {
   const subject = "Verify your Ember & Wick account";
   const text = [
     `Welcome to Ember & Wick. Your verification code is ${code}.`,
@@ -113,8 +119,25 @@ function verificationEmail(code: string): { subject: string; text: string; html:
   return { subject, text, html };
 }
 
-/** Sends the code as the store's own address through the configured provider. */
-export async function sendVerificationEmail(to: string, code: string): Promise<void> {
+function passwordResetEmail(code: string): Mail {
+  const subject = "Reset your Ember & Wick password";
+  const text = [
+    `We received a request to reset the password for your Ember & Wick account. Your reset code is ${code}.`,
+    "",
+    "It expires in 10 minutes and can only be used once.",
+    "If you did not ask for a reset, ignore this email. Your password will not change.",
+  ].join("\n");
+  const html = `<div style="font-family:Helvetica,Arial,sans-serif;color:#1b1917;line-height:1.6">
+  <p>We received a request to reset the password for your Ember &amp; Wick account. Your reset code is</p>
+  <p style="font-size:32px;letter-spacing:8px;font-weight:600;margin:16px 0">${code}</p>
+  <p style="color:#554d44">It expires in 10 minutes and can only be used once.</p>
+  <p style="color:#554d44">If you did not ask for a reset, ignore this email. Your password will not change.</p>
+</div>`;
+  return { subject, text, html };
+}
+
+/** Sends a code as the store's own address through the configured provider. */
+async function deliverEmail(to: string, mail: Mail): Promise<void> {
   const env = await getEnv();
   const issue = await emailConfigIssue();
   if (issue) throw new ApiError("email_not_configured", issue, 503);
@@ -124,7 +147,6 @@ export async function sendVerificationEmail(to: string, code: string): Promise<v
   const fromEmail = read(env, "OTP_FROM_EMAIL")!;
   const fromName = read(env, "EMAIL_FROM_NAME") ?? DEFAULT_FROM_NAME;
   const replyTo = read(env, "EMAIL_REPLY_TO");
-  const mail = verificationEmail(code);
 
   if (resendKey) {
     // EMAIL_API_BASE lets an operator (and the integration suite) point delivery
@@ -143,8 +165,8 @@ export async function sendVerificationEmail(to: string, code: string): Promise<v
       }),
     });
     if (!response.ok) {
-      console.error("[signup] resend delivery failed:", response.status);
-      throw new ApiError("email_error", "We couldn't send the verification email. Please try again.", 502);
+      console.error("[email] resend delivery failed:", response.status);
+      throw new ApiError("email_error", "We couldn't send the email. Please try again.", 502);
     }
     return;
   }
@@ -162,7 +184,15 @@ export async function sendVerificationEmail(to: string, code: string): Promise<v
     }),
   });
   if (!response.ok) {
-    console.error("[signup] brevo delivery failed:", response.status);
-    throw new ApiError("email_error", "We couldn't send the verification email. Please try again.", 502);
+    console.error("[email] brevo delivery failed:", response.status);
+    throw new ApiError("email_error", "We couldn't send the email. Please try again.", 502);
   }
+}
+
+export async function sendVerificationEmail(to: string, code: string): Promise<void> {
+  await deliverEmail(to, verificationEmail(code));
+}
+
+export async function sendPasswordResetEmail(to: string, code: string): Promise<void> {
+  await deliverEmail(to, passwordResetEmail(code));
 }

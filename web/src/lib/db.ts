@@ -26,6 +26,7 @@ import type {
   OrderDoc,
   OrderItemDoc,
   OrderStatusHistoryDoc,
+  PasswordResetChallengeDoc,
   PaymentDoc,
   ProductDoc,
   ProductImageDoc,
@@ -162,6 +163,7 @@ export class Store {
   readonly admin_audit_log: Scoped<AuditLogDoc>;
   readonly inventory_movements: Scoped<InventoryMovementDoc>;
   readonly signup_otp_challenges: Scoped<SignupOtpChallengeDoc>;
+  readonly password_reset_challenges: Scoped<PasswordResetChallengeDoc>;
 
   constructor(
     readonly db: Db,
@@ -194,6 +196,7 @@ export class Store {
     this.admin_audit_log = scoped(db.collection<AuditLogDoc>("admin_audit_log"), session);
     this.inventory_movements = scoped(db.collection<InventoryMovementDoc>("inventory_movements"), session);
     this.signup_otp_challenges = scoped(db.collection<SignupOtpChallengeDoc>("signup_otp_challenges"), session);
+    this.password_reset_challenges = scoped(db.collection<PasswordResetChallengeDoc>("password_reset_challenges"), session);
   }
 }
 
