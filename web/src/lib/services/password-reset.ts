@@ -70,8 +70,13 @@ export async function startPasswordReset(input: {
     try {
       await sendPasswordResetEmail(input.email, code);
     } catch (error) {
-      await db.password_reset_challenges.deleteOne({ _id: challengeId });
-      throw error;
+      // Never turn a delivery failure into a different response for a known
+      // address: that would let an unauthenticated caller enumerate accounts.
+      // The operator sees the provider error in the server log instead.
+      console.error(
+        "[password-reset] delivery failed:",
+        error instanceof Error ? error.message : "unknown error",
+      );
     }
   }
 
