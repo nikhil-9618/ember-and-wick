@@ -1,4 +1,3 @@
-import type { D1PreparedStatement } from "./types-d1";
 import { randomId, randomToken } from "./crypto";
 
 export type OrderStatus =
@@ -66,32 +65,6 @@ export function orderNumber(): string {
 export interface StockReservation {
   variantId: string;
   quantity: number;
-}
-
-/**
- * Statements that reduce inventory. `stock` has a CHECK (stock >= 0) constraint,
- * so an over-sell aborts the entire D1 batch transaction instead of going
- * negative. That is what makes order creation atomic.
- */
-export function decrementStockStatements(
-  prepare: (sql: string) => D1PreparedStatement,
-  lines: StockReservation[],
-): D1PreparedStatement[] {
-  return lines.map((line) =>
-    prepare("UPDATE product_variants SET stock = stock - ? WHERE id = ? AND is_active = 1").bind(
-      line.quantity,
-      line.variantId,
-    ),
-  );
-}
-
-export function restoreStockStatements(
-  prepare: (sql: string) => D1PreparedStatement,
-  lines: StockReservation[],
-): D1PreparedStatement[] {
-  return lines.map((line) =>
-    prepare("UPDATE product_variants SET stock = stock + ? WHERE id = ?").bind(line.quantity, line.variantId),
-  );
 }
 
 export function newId(prefix: string): string {

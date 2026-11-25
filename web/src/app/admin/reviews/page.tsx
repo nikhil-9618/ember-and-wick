@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { allRows } from "@/lib/db";
+import { getDb } from "@/lib/db";
 import { ReviewActions } from "@/components/admin/review-actions";
 import { StarRating } from "@/components/site/star-rating";
 
@@ -12,25 +12,28 @@ export default async function AdminReviewsPage({
 }) {
   const { status } = await searchParams;
   const filter = status && ["pending", "published", "rejected"].includes(status) ? status : "pending";
-  const reviews = await allRows<{
-    id: string;
-    rating: number;
-    title: string | null;
-    body: string;
-    status: string;
-    created_at: string;
-    product_name: string;
-    product_id: string;
-    author: string;
-    email: string;
-  }>(
-    `SELECT r.id, r.rating, r.title, r.body, r.status, r.created_at, p.name AS product_name, p.id AS product_id,
-            u.name AS author, u.email
-       FROM reviews r JOIN products p ON p.id = r.product_id JOIN users u ON u.id = r.user_id
-      WHERE r.status = ?
-      ORDER BY r.created_at DESC LIMIT 200`,
-    [filter],
-  );
+  const db = await getDb();
+  const rows = await db.reviews.find({ status: filter } as any).sort({ created_at: -1 }).limit(200).toArray();
+  const productIds = [...new Set((rows as any[]).map((r) => r.product_id))];
+  const userIds = [...new Set((rows as any[]).map((r) => r.user_id))];
+  const [products, users] = await Promise.all([
+    productIds.length ? db.products.find({ _id: { $in: productIds } }).toArray() : Promise.resolve([]),
+    userIds.length ? db.users.find({ _id: { $in: userIds } }).toArray() : Promise.resolve([]),
+  ]);
+  const productMap = new Map((products as any[]).map((p) => [p._id, p]));
+  const userMap = new Map((users as any[]).map((u) => [u._id, u]));
+  const reviews = (rows as any[]).map((r) => ({
+    id: r._id,
+    rating: r.rating,
+    title: r.title,
+    body: r.body,
+    status: r.status,
+    created_at: r.created_at,
+    product_name: productMap.get(r.product_id)?.name ?? "",
+    product_id: r.product_id,
+    author: userMap.get(r.user_id)?.name ?? "",
+    email: userMap.get(r.user_id)?.email ?? "",
+  }));
 
   return (
     <div>

@@ -11,24 +11,19 @@ export const POST = apiRoute(async (request) => {
   const input = await readJson(request, changePasswordSchema);
   const db = await getDb();
 
-  const row = await db
-    .prepare("SELECT password_hash FROM users WHERE id = ?")
-    .bind(user.id)
-    .first<{ password_hash: string }>();
+  const row = await db.users.findOne({ _id: user.id });
   if (!row) throw badRequest("Account not found.");
 
-  const valid = await verifyPassword(input.currentPassword, row.password_hash);
+  const valid = await verifyPassword(input.currentPassword, (row as any).password_hash);
   if (!valid) throw badRequest("Your current password is incorrect.");
 
   const newHash = await hashPassword(input.newPassword);
   const now = new Date().toISOString();
-  await db.batch([
-    db.prepare("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?").bind(newHash, now, user.id),
-    // Sign out every other device, keep the current session alive.
-    db
-      .prepare("UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND id != ? AND revoked_at IS NULL")
-      .bind(now, user.id, sessionId),
-  ]);
+  await db.users.updateOne({ _id: user.id }, { $set: { password_hash: newHash, updated_at: now } });
+  await db.sessions.updateMany(
+    { user_id: user.id, _id: { $ne: sessionId }, revoked_at: null },
+    { $set: { revoked_at: now } },
+  );
 
   return json({ ok: true });
 });

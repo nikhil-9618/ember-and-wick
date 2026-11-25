@@ -1,4 +1,4 @@
-import type { D1Database } from "./types-d1";
+import type { Store } from "./db";
 
 export interface RateLimitResult {
   allowed: boolean;
@@ -7,11 +7,12 @@ export interface RateLimitResult {
 }
 
 /**
- * Fixed-window rate limiting backed by D1, so it works identically on Workers
- * and local dev without an extra service. A single atomic upsert does the work.
+ * Fixed-window rate limiting backed by MongoDB. A single pipeline update
+ * increments the counter when the window matches and resets it otherwise, so
+ * the upsert stays atomic with respect to concurrent requests.
  */
 export async function checkRateLimit(
-  db: D1Database,
+  db: Store,
   key: string,
   limit: number,
   windowSeconds: number,
@@ -20,18 +21,24 @@ export async function checkRateLimit(
   const windowStart = Math.floor(now / windowSeconds) * windowSeconds;
   const resetAt = windowStart + windowSeconds;
 
-  const row = await db
-    .prepare(
-      `INSERT INTO rate_limits (key, count, window_start)
-       VALUES (?, 1, ?)
-       ON CONFLICT(key) DO UPDATE SET
-         count = CASE WHEN rate_limits.window_start = excluded.window_start
-                      THEN rate_limits.count + 1 ELSE 1 END,
-         window_start = excluded.window_start
-       RETURNING count, window_start`,
-    )
-    .bind(key, windowStart)
-    .first<{ count: number; window_start: number }>();
+  const row = (await db.rate_limits.findOneAndUpdate(
+    { _id: key },
+    [
+      {
+        $set: {
+          window_start: windowStart,
+          count: {
+            $cond: [
+              { $eq: ["$window_start", windowStart] },
+              { $add: ["$count", 1] },
+              1,
+            ],
+          },
+        },
+      },
+    ] as any,
+    { upsert: true },
+  )) as unknown as { count: number; window_start: number } | null;
 
   const count = row?.count ?? 1;
   return {
@@ -41,8 +48,7 @@ export async function checkRateLimit(
   };
 }
 
-/** Removes expired counters; called opportunistically, never on a hot path. */
-export async function pruneRateLimits(db: D1Database): Promise<void> {
+export async function pruneRateLimits(db: Store): Promise<void> {
   const cutoff = Math.floor(Date.now() / 1000) - 24 * 60 * 60;
-  await db.prepare("DELETE FROM rate_limits WHERE window_start < ?").bind(cutoff).run();
+  await db.rate_limits.deleteMany({ window_start: { $lt: cutoff } } as any);
 }

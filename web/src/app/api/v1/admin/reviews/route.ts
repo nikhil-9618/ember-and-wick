@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { allRows, getDb } from "@/lib/db";
+import { getDb } from "@/lib/db";
 import { assertSameOrigin, apiRoute, json, readJson } from "@/lib/http";
 import { reviewModerationSchema } from "@/lib/validation";
 import { notFound } from "@/lib/errors";
@@ -10,16 +10,30 @@ import { auditActor, recordAudit } from "@/lib/services/audit";
 export const GET = apiRoute(async (request) => {
   await requireAdmin(request);
   const status = new URL(request.url).searchParams.get("status");
-  const where = status && ["pending", "published", "rejected"].includes(status) ? "WHERE r.status = ?" : "";
-  const bindings = where ? [status] : [];
-  const reviews = await allRows(
-    `SELECT r.id, r.rating, r.title, r.body, r.status, r.created_at, p.name AS product_name, p.id AS product_id,
-            u.name AS author, u.email
-       FROM reviews r JOIN products p ON p.id = r.product_id JOIN users u ON u.id = r.user_id
-       ${where}
-      ORDER BY r.created_at DESC LIMIT 200`,
-    bindings,
-  );
+  const filter = status && ["pending", "published", "rejected"].includes(status) ? status : null;
+  const db = await getDb();
+  const query = filter ? ({ status: filter } as any) : {};
+  const rows = await db.reviews.find(query).sort({ created_at: -1 }).limit(200).toArray();
+  const productIds = [...new Set((rows as any[]).map((r) => r.product_id))];
+  const userIds = [...new Set((rows as any[]).map((r) => r.user_id))];
+  const [products, users] = await Promise.all([
+    productIds.length ? db.products.find({ _id: { $in: productIds } }).toArray() : Promise.resolve([]),
+    userIds.length ? db.users.find({ _id: { $in: userIds } }).toArray() : Promise.resolve([]),
+  ]);
+  const productMap = new Map((products as any[]).map((p) => [p._id, p]));
+  const userMap = new Map((users as any[]).map((u) => [u._id, u]));
+  const reviews = (rows as any[]).map((r) => ({
+    id: r._id,
+    rating: r.rating,
+    title: r.title,
+    body: r.body,
+    status: r.status,
+    created_at: r.created_at,
+    product_name: productMap.get(r.product_id)?.name ?? "",
+    product_id: r.product_id,
+    author: userMap.get(r.user_id)?.name ?? "",
+    email: userMap.get(r.user_id)?.email ?? "",
+  }));
   return json({ reviews });
 });
 
@@ -32,21 +46,18 @@ export const PATCH = apiRoute(async (request) => {
   );
   const db = await getDb();
 
-  const review = await db
-    .prepare("SELECT id, product_id FROM reviews WHERE id = ?")
-    .bind(input.reviewId)
-    .first<{ id: string; product_id: string }>();
+  const review = await db.reviews.findOne({ _id: input.reviewId });
   if (!review) throw notFound("Review not found.");
 
-  await db.prepare("UPDATE reviews SET status = ? WHERE id = ?").bind(input.status, review.id).run();
-  await refreshProductRating(review.product_id);
+  await db.reviews.updateOne({ _id: input.reviewId }, { $set: { status: input.status } });
+  await refreshProductRating((review as any).product_id);
   await recordAudit({
     actor: auditActor(auth),
     action: "review.moderated",
     entityType: "review",
-    entityId: review.id,
-    summary: `Review ${review.id} marked ${input.status}`,
-    detail: { productId: review.product_id, status: input.status },
+    entityId: input.reviewId,
+    summary: `Review ${input.reviewId} marked ${input.status}`,
+    detail: { productId: (review as any).product_id, status: input.status },
   });
 
   return json({ ok: true });

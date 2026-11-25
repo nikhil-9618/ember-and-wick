@@ -7,7 +7,7 @@ import { ReviewForm } from "@/components/product/review-form";
 import { StarRating } from "@/components/site/star-rating";
 import { getProductBySlug, listPublishedReviews, listProducts } from "@/lib/services/catalog";
 import { getCurrentUser } from "@/lib/auth";
-import { firstRow } from "@/lib/db";
+import { getDb } from "@/lib/db";
 import { BRAND } from "@/lib/brand";
 import { formatMoney } from "@/lib/money";
 
@@ -50,11 +50,13 @@ export default async function ProductPage({ params }: PageProps) {
 
   let wishlisted = false;
   if (user) {
-    const row = await firstRow<{ id: string }>(
-      "SELECT id FROM wishlist_items WHERE user_id = ? AND product_id = ?",
-      [user.id, product.id],
-    ).catch(() => null);
-    wishlisted = Boolean(row);
+    try {
+      const db = await getDb();
+      const row = await db.wishlist_items.findOne({ user_id: user.id, product_id: product.id });
+      wishlisted = Boolean(row);
+    } catch {
+      wishlisted = false;
+    }
   }
 
   const primary = product.images[0];

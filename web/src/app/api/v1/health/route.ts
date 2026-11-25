@@ -1,4 +1,4 @@
-import { firstRow } from "@/lib/db";
+import { getDb } from "@/lib/db";
 import { apiRoute, json } from "@/lib/http";
 import { getPaymentConfig } from "@/lib/config";
 
@@ -6,7 +6,8 @@ export const GET = apiRoute(async () => {
   const started = Date.now();
   let database = "ok";
   try {
-    await firstRow<{ ok: number }>("SELECT 1 AS ok");
+    const db = await getDb();
+    await db.users.findOne({});
   } catch {
     database = "unavailable";
   }

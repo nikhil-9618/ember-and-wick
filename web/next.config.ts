@@ -3,9 +3,9 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   reactStrictMode: true,
-  // libSQL ships native bindings for Node and must not be bundled by the server
-  // compiler; the Workers build never imports it (D1 is used there).
-  serverExternalPackages: ["@libsql/client", "libsql"],
+  // The MongoDB driver must stay outside the server bundle so its optional
+  // native dependencies are resolved at runtime.
+  serverExternalPackages: ["mongodb"],
   allowedDevOrigins: process.env.PREVIEW_HOST ? [process.env.PREVIEW_HOST] : [],
   images: {
     deviceSizes: [360, 420, 640, 828, 1080, 1280, 1600, 1920],

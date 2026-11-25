@@ -1,11 +1,11 @@
-import type { D1PreparedStatement } from "../types-d1";
-import { firstRow, getDb } from "../db";
+import { withTransaction } from "../db";
 import { ApiError, badRequest, notFound } from "../errors";
 import { getPaymentConfig } from "../config";
 import { createRazorpayRefund } from "../payments/razorpay";
 import { notify } from "./notify";
-import { auditStatement, type AuditActor } from "./audit";
-import { statusHistoryStatement } from "../history";
+import { insertAuditLog } from "./audit";
+import { insertStatusHistory } from "../history";
+import type { AuditActor } from "./audit";
 
 export interface RefundableOrder {
   id: string;
@@ -31,51 +31,56 @@ export interface RefundToExecute {
   payment: CapturedPayment;
 }
 
-/** Refunds counted against the order total: approved, in flight, or done. */
 export async function reservedRefundTotal(orderId: string, excludeRefundId?: string): Promise<number> {
-  const row = await firstRow<{ total: number }>(
-    `SELECT COALESCE(SUM(amount), 0) AS total FROM refunds
-      WHERE order_id = ? AND id != ? AND status IN ('requested', 'processing', 'completed')`,
-    [orderId, excludeRefundId ?? ""],
-  );
-  return row?.total ?? 0;
+  const db = await (await import("../db")).getDb();
+  const match: Record<string, unknown> = {
+    order_id: orderId,
+    status: { $in: ["requested", "processing", "completed"] },
+  };
+  if (excludeRefundId) match._id = { $ne: excludeRefundId };
+  const agg = await db.refunds
+    .aggregate<{ total: number }>([{ $match: match }, { $group: { _id: null, total: { $sum: "$amount" } } }])
+    .toArray();
+  return (agg[0]?.total ?? 0) as number;
 }
 
 export async function loadRefundableOrder(number: string): Promise<RefundableOrder> {
-  const order = await firstRow<RefundableOrder>(
-    "SELECT id, number, user_id, total, status, payment_status FROM orders WHERE number = ?",
-    [number],
-  );
+  const db = await (await import("../db")).getDb();
+  const order = await db.orders.findOne({ number });
   if (!order) throw notFound("Order not found.");
-  if (order.payment_status !== "paid" && order.payment_status !== "partially_refunded") {
+  const o = order as any;
+  if (o.payment_status !== "paid" && o.payment_status !== "partially_refunded") {
     throw badRequest("Only paid orders can be refunded.");
   }
-  return order;
+  return {
+    id: o._id,
+    number: o.number,
+    user_id: o.user_id,
+    total: o.total,
+    status: o.status,
+    payment_status: o.payment_status,
+  };
 }
 
 export async function loadCapturedPayment(orderId: string): Promise<CapturedPayment> {
-  const payment = await firstRow<CapturedPayment>(
-    "SELECT id, provider, provider_payment_id, status FROM payments WHERE order_id = ? AND status IN ('captured','refunded') ORDER BY created_at DESC LIMIT 1",
-    [orderId],
-  );
-  if (!payment) throw badRequest("There is no captured payment to refund.");
-  return payment;
+  const db = await (await import("../db")).getDb();
+  const payment = await db.payments
+    .find({ order_id: orderId, status: { $in: ["captured", "refunded"] } })
+    .sort({ created_at: -1 })
+    .limit(1)
+    .toArray();
+  const p = (payment as any[])[0];
+  if (!p) throw badRequest("There is no captured payment to refund.");
+  return { id: p._id, provider: p.provider, provider_payment_id: p.provider_payment_id, status: p.status };
 }
 
-/**
- * Sends one refund to the provider and records the outcome.
- *
- * Duplicate execution is prevented in three places: callers claim the refund row
- * with a status-guarded UPDATE first, `refunds.provider_refund_id` is UNIQUE, and
- * every write here happens in a single batch with the order update.
- */
 export async function executeRefund(input: {
   refund: RefundToExecute;
   actor: AuditActor;
   action: "refund.created" | "refund.approved";
 }): Promise<{ status: "completed" | "processing"; providerRefundId: string | null }> {
   const { refund, actor, action } = input;
-  const db = await getDb();
+  const db = await (await import("../db")).getDb();
   const config = await getPaymentConfig();
   const amountLabel = `₹${(refund.amount / 100).toFixed(2)}`;
 
@@ -100,18 +105,16 @@ export async function executeRefund(input: {
     }
   } catch (error) {
     const failedAt = new Date().toISOString();
-    await db.batch([
-      db.prepare("UPDATE refunds SET status = 'failed', updated_at = ? WHERE id = ?").bind(failedAt, refund.id),
-      auditStatement(db, {
-        actor,
-        action: "refund.failed",
-        entityType: "refund",
-        entityId: refund.id,
-        summary: `Refund of ${amountLabel} for ${refund.order.number} failed at the provider`,
-        detail: { orderId: refund.order.id, amount: refund.amount, error: error instanceof Error ? error.message : "unknown" },
-        at: failedAt,
-      }),
-    ]);
+    await db.refunds.updateOne({ _id: refund.id }, { $set: { status: "failed", updated_at: failedAt } });
+    await insertAuditLog(db, {
+      actor,
+      action: "refund.failed",
+      entityType: "refund",
+      entityId: refund.id,
+      summary: `Refund of ${amountLabel} for ${refund.order.number} failed at the provider`,
+      detail: { orderId: refund.order.id, amount: refund.amount, error: error instanceof Error ? error.message : "unknown" },
+      at: failedAt,
+    });
     throw error;
   }
 
@@ -120,51 +123,35 @@ export async function executeRefund(input: {
   const completedNow = config.mode === "test";
   const doneAt = new Date().toISOString();
 
-  const statements: D1PreparedStatement[] = [
-    db
-      .prepare("UPDATE refunds SET status = ?, provider_refund_id = ?, processed_at = ?, updated_at = ? WHERE id = ?")
-      .bind(completedNow ? "completed" : "processing", providerRefundId, completedNow ? doneAt : null, doneAt, refund.id),
-    db
-      .prepare("UPDATE orders SET payment_status = ?, status = ?, updated_at = ? WHERE id = ?")
-      .bind(
-        fullyRefunded ? "refunded" : "partially_refunded",
-        // A partial refund must not drag a shipped/delivered order back to `paid`.
-        fullyRefunded ? "refunded" : refund.order.status,
-        doneAt,
-        refund.order.id,
-      ),
-    auditStatement(db, {
+  await withTransaction(async (tx) => {
+    await tx.refunds.updateOne(
+      { _id: refund.id },
+      { $set: { status: completedNow ? "completed" : "processing", provider_refund_id: providerRefundId, processed_at: completedNow ? doneAt : null, updated_at: doneAt } },
+    );
+    await tx.orders.updateOne(
+      { _id: refund.order.id },
+      { $set: { payment_status: fullyRefunded ? "refunded" : "partially_refunded", status: fullyRefunded ? "refunded" : refund.order.status, updated_at: doneAt } },
+    );
+    await insertAuditLog(tx, {
       actor,
       action: "refund.completed",
       entityType: "refund",
       entityId: refund.id,
       summary: `${action === "refund.approved" ? "Approved" : "Issued"} refund of ${amountLabel} for ${refund.order.number}`,
-      detail: {
-        orderId: refund.order.id,
-        amount: refund.amount,
-        reason: refund.reason,
-        fullyRefunded,
-        providerRefundId,
-        mode: config.mode,
-      },
+      detail: { orderId: refund.order.id, amount: refund.amount, reason: refund.reason, fullyRefunded, providerRefundId, mode: config.mode },
       at: doneAt,
-    }),
-  ];
-
-  if (fullyRefunded) {
-    statements.push(
-      statusHistoryStatement(db, {
+    });
+    if (fullyRefunded) {
+      await insertStatusHistory(tx, {
         orderId: refund.order.id,
         fromStatus: refund.order.status,
         toStatus: "refunded",
         actor: { type: "admin", id: actor.id, label: actor.email },
         reason: `Full refund of ${amountLabel}: ${refund.reason}`,
         at: doneAt,
-      }),
-    );
-  }
-
-  await db.batch(statements);
+      });
+    }
+  });
 
   if (refund.order.user_id) {
     await notify(db, {

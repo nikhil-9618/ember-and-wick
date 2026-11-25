@@ -1,8 +1,8 @@
 import { cookies } from "next/headers";
-import type { D1Database } from "./types-d1";
 import { randomId, randomToken, sha256Hex } from "./crypto";
 import { forbidden, unauthenticated } from "./errors";
-import { firstRow, getDb } from "./db";
+import { getDb } from "./db";
+import type { Store } from "./db";
 
 export const SESSION_COOKIE = "ew_session";
 const SESSION_TTL_DAYS = 30;
@@ -32,7 +32,7 @@ interface SessionRow extends SessionUser {
 }
 
 export async function createSession(
-  db: D1Database,
+  db: Store,
   userId: string,
   userAgent: string | null,
 ): Promise<{ token: string; expiresAt: string; sessionId: string }> {
@@ -41,49 +41,47 @@ export async function createSession(
   const now = new Date();
   const expiresAt = new Date(now.getTime() + SESSION_TTL_MS).toISOString();
 
-  await db
-    .prepare("DELETE FROM sessions WHERE user_id = ? AND (expires_at < ? OR revoked_at IS NOT NULL)")
-    .bind(userId, now.toISOString())
-    .run();
-  await db
-    .prepare("INSERT INTO sessions (id, user_id, created_at, expires_at, user_agent) VALUES (?, ?, ?, ?, ?)")
-    .bind(sessionId, userId, now.toISOString(), expiresAt, userAgent)
-    .run();
+  await db.sessions.deleteMany({
+    user_id: userId,
+    $or: [{ expires_at: { $lt: now.toISOString() } }, { revoked_at: { $ne: null } }],
+  } as any);
+  await db.sessions.insertOne({
+    _id: sessionId,
+    user_id: userId,
+    created_at: now.toISOString(),
+    expires_at: expiresAt,
+    revoked_at: null,
+    user_agent: userAgent,
+  } as any);
 
   return { token, expiresAt, sessionId };
 }
 
 export async function revokeSession(sessionId: string): Promise<void> {
   const db = await getDb();
-  await db.prepare("UPDATE sessions SET revoked_at = ? WHERE id = ?").bind(new Date().toISOString(), sessionId).run();
+  await db.sessions.updateOne(
+    { _id: sessionId },
+    { $set: { revoked_at: new Date().toISOString() } },
+  );
 }
 
 export async function userForToken(token: string): Promise<SessionUser | null> {
   if (!token || token.length < 20) return null;
   const db = await getDb();
   const sessionId = await sha256Hex(token);
-  const row = await db
-    .prepare(
-      `SELECT s.id AS session_id, s.expires_at, s.revoked_at,
-              u.id, u.email, u.name, u.phone, u.role, u.created_at
-         FROM sessions s
-         JOIN users u ON u.id = s.user_id
-        WHERE s.id = ?`,
-    )
-    .bind(sessionId)
-    .first<SessionRow>();
-
-  if (!row) return null;
-  if (row.revoked_at) return null;
-  if (new Date(row.expires_at).getTime() < Date.now()) return null;
-
+  const session = await db.sessions.findOne({ _id: sessionId });
+  if (!session) return null;
+  if (session.revoked_at) return null;
+  if (new Date(session.expires_at).getTime() < Date.now()) return null;
+  const user = await db.users.findOne({ _id: session.user_id });
+  if (!user) return null;
   return {
-    id: row.id,
-    email: row.email,
-    name: row.name,
-    phone: row.phone,
-    role: row.role,
-    created_at: row.created_at,
+    id: user._id,
+    email: user.email,
+    name: user.name,
+    phone: user.phone,
+    role: user.role,
+    created_at: user.created_at,
   };
 }
 
@@ -105,11 +103,6 @@ export function cookieToken(request: Request): string | null {
   return null;
 }
 
-/**
- * Resolves auth from either an Authorization bearer token (mobile app) or the
- * HttpOnly session cookie (website). Both resolve to the same sessions table,
- * so a session revoked on one platform stops working on the other.
- */
 export async function resolveAuth(request: Request): Promise<AuthContext | null> {
   const bearer = bearerToken(request);
   if (bearer) {
@@ -136,7 +129,6 @@ export async function requireAdmin(request: Request): Promise<AuthContext> {
   return auth;
 }
 
-/** Server-component helper: current user from the session cookie, if any. */
 export async function getCurrentUser(): Promise<SessionUser | null> {
   const jar = await cookies();
   const token = jar.get(SESSION_COOKIE)?.value;
@@ -162,13 +154,10 @@ export function clearedSessionCookie(): string {
 
 export async function touchCartForUser(userId: string): Promise<string> {
   const db = await getDb();
-  const existing = await firstRow<{ id: string }>("SELECT id FROM carts WHERE user_id = ?", [userId]);
-  if (existing) return existing.id;
+  const existing = await db.carts.findOne({ user_id: userId });
+  if (existing) return existing._id;
   const id = randomId("cart");
   const now = new Date().toISOString();
-  await db
-    .prepare("INSERT INTO carts (id, user_id, created_at, updated_at) VALUES (?, ?, ?, ?)")
-    .bind(id, userId, now, now)
-    .run();
+  await db.carts.insertOne({ _id: id, user_id: userId, created_at: now, updated_at: now } as any);
   return id;
 }

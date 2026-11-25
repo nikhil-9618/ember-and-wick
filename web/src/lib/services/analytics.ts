@@ -1,4 +1,4 @@
-import { allRows, firstRow } from "../db";
+import { getDb } from "../db";
 
 export interface DashboardData {
   revenue: { paid: number; paidOrders: number; refunded: number };
@@ -19,73 +19,101 @@ export interface DashboardData {
 }
 
 export async function getDashboard(): Promise<DashboardData> {
-  const [revenue, orderCounts, customerCount, lowStock, topProducts, recentOrders, daily] = await Promise.all([
-    firstRow<{ paid_revenue: number; paid_orders: number; refunded: number }>(
-      `SELECT COALESCE(SUM(CASE WHEN payment_status = 'paid' THEN total ELSE 0 END), 0) AS paid_revenue,
-              SUM(CASE WHEN payment_status = 'paid' THEN 1 ELSE 0 END) AS paid_orders,
-              COALESCE(SUM((SELECT COALESCE(SUM(amount), 0) FROM refunds r WHERE r.order_id = o.id AND r.status = 'completed')), 0) AS refunded
-         FROM orders o`,
-    ),
-    allRows<{ status: string; count: number }>("SELECT status, COUNT(*) AS count FROM orders GROUP BY status"),
-    firstRow<{ total: number }>("SELECT COUNT(*) AS total FROM users WHERE role = 'customer'"),
-    allRows<{
-      id: string;
-      sku: string;
-      variant_name: string;
-      product_name: string;
-      stock: number;
-      low_stock_threshold: number;
-      slug: string;
-    }>(
-      `SELECT v.id, v.sku, v.name AS variant_name, p.name AS product_name, v.stock, v.low_stock_threshold, p.slug
-         FROM product_variants v JOIN products p ON p.id = v.product_id
-        WHERE v.is_active = 1 AND p.status != 'archived' AND v.stock <= v.low_stock_threshold
-        ORDER BY v.stock ASC LIMIT 20`,
-    ),
-    allRows<{ product_name: string; units: number; revenue: number }>(
-      `SELECT oi.product_name, SUM(oi.quantity) AS units, SUM(oi.line_total) AS revenue
-         FROM order_items oi JOIN orders o ON o.id = oi.order_id
-        WHERE o.payment_status = 'paid'
-        GROUP BY oi.product_name ORDER BY units DESC LIMIT 5`,
-    ),
-    allRows<{ number: string; email: string; total: number; status: string; created_at: string }>(
-      "SELECT number, email, total, status, created_at FROM orders ORDER BY created_at DESC LIMIT 8",
-    ),
-    allRows<{ day: string; revenue: number; orders: number }>(
-      `SELECT substr(COALESCE(paid_at, created_at), 1, 10) AS day,
-              COALESCE(SUM(CASE WHEN payment_status = 'paid' THEN total ELSE 0 END), 0) AS revenue,
-              COUNT(*) AS orders
-         FROM orders
-        WHERE created_at >= datetime('now', '-14 days')
-        GROUP BY day ORDER BY day ASC`,
-    ),
+  const db = await getDb();
+
+  const [revenueAgg, orderCounts, customerCount, lowStock, topProducts, recentOrders, daily] = await Promise.all([
+    db.orders
+      .aggregate<{ paid_revenue: number; paid_orders: number; refunded: number }>([
+        {
+          $group: {
+            _id: null,
+            paid_revenue: { $sum: { $cond: [{ $eq: ["$payment_status", "paid"] }, "$total", 0] } },
+            paid_orders: { $sum: { $cond: [{ $eq: ["$payment_status", "paid"] }, 1, 0] } },
+          },
+        },
+      ])
+      .toArray(),
+    db.orders.aggregate<{ _id: string; count: number }>([{ $group: { _id: "$status", count: { $sum: 1 } } }]).toArray(),
+    db.users.countDocuments({ role: "customer" }),
+    db.product_variants
+      .aggregate<any>([
+        { $match: { is_active: 1 } },
+        { $lookup: { from: "products", localField: "product_id", foreignField: "_id", as: "product" } },
+        { $unwind: "$product" },
+        { $match: { $expr: { $and: [{ $ne: ["$product.status", "archived"] }, { $lte: ["$stock", "$low_stock_threshold"] }] } } },
+        { $sort: { stock: 1 } },
+        { $limit: 20 },
+      ])
+      .toArray(),
+    db.order_items
+      .aggregate<any>([
+        { $lookup: { from: "orders", localField: "order_id", foreignField: "_id", as: "order" } },
+        { $unwind: "$order" },
+        { $match: { "order.payment_status": "paid" } },
+        { $group: { _id: "$product_name", units: { $sum: "$quantity" }, revenue: { $sum: "$line_total" } } },
+        { $sort: { units: -1 } },
+        { $limit: 5 },
+      ])
+      .toArray(),
+    db.orders.find({}).sort({ created_at: -1 }).limit(8).toArray(),
+    db.orders
+      .aggregate<any>([
+        { $match: { created_at: { $gte: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString() } } },
+        {
+          $group: {
+            _id: { $substr: [{ $ifNull: ["$paid_at", "$created_at"] }, 0, 10] },
+            revenue: { $sum: { $cond: [{ $eq: ["$payment_status", "paid"] }, "$total", 0] } },
+            orders: { $sum: 1 },
+          },
+        },
+        { $sort: { _id: 1 } },
+      ])
+      .toArray(),
   ]);
+
+  // refunded total
+  const refundedAgg = await db.refunds
+    .aggregate<{ total: number }>([
+      { $match: { status: "completed" } },
+      { $group: { _id: null, total: { $sum: "$amount" } } },
+    ])
+    .toArray();
+
+  const revenueRow = (revenueAgg as any[])[0] ?? { paid_revenue: 0, paid_orders: 0 };
 
   return {
     revenue: {
-      paid: revenue?.paid_revenue ?? 0,
-      paidOrders: revenue?.paid_orders ?? 0,
-      refunded: revenue?.refunded ?? 0,
+      paid: revenueRow.paid_revenue ?? 0,
+      paidOrders: revenueRow.paid_orders ?? 0,
+      refunded: (refundedAgg as any[])[0]?.total ?? 0,
     },
-    customers: customerCount?.total ?? 0,
-    orderCounts,
-    lowStock: lowStock.map((row) => ({
-      variantId: row.id,
+    customers: customerCount,
+    orderCounts: (orderCounts as any[]).map((r) => ({ status: r._id, count: r.count })),
+    lowStock: (lowStock as any[]).map((row) => ({
+      variantId: row._id,
       sku: row.sku,
-      variantName: row.variant_name,
-      productName: row.product_name,
-      slug: row.slug,
+      variantName: row.name,
+      productName: row.product.name,
+      slug: row.product.slug,
       stock: row.stock,
       threshold: row.low_stock_threshold,
     })),
-    topProducts,
-    recentOrders: recentOrders.map((row) => ({
+    topProducts: (topProducts as any[]).map((r) => ({
+      product_name: r._id,
+      units: r.units,
+      revenue: r.revenue,
+    })),
+    recentOrders: (recentOrders as any[]).map((row) => ({
       number: row.number,
       email: row.email,
       total: row.total,
       status: row.status,
       createdAt: row.created_at,
     })),
-    daily,
+    daily: (daily as any[]).map((r) => ({
+      day: r._id,
+      revenue: r.revenue,
+      orders: r.orders,
+    })),
   };
 }

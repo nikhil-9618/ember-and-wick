@@ -18,15 +18,9 @@ export const POST = apiRoute(async (request) => {
   const now = new Date().toISOString();
 
   if (input.notificationId) {
-    await db
-      .prepare("UPDATE notifications SET read_at = ? WHERE id = ? AND user_id = ?")
-      .bind(now, input.notificationId, user.id)
-      .run();
+    await db.notifications.updateOne({ _id: input.notificationId, user_id: user.id }, { $set: { read_at: now } });
   } else {
-    await db
-      .prepare("UPDATE notifications SET read_at = ? WHERE user_id = ? AND read_at IS NULL")
-      .bind(now, user.id)
-      .run();
+    await db.notifications.updateMany({ user_id: user.id, read_at: null }, { $set: { read_at: now } });
   }
 
   return json({ ok: true });

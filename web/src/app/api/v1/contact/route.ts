@@ -13,10 +13,15 @@ export const POST = apiRoute(async (request) => {
   if (!limit.allowed) throw rateLimited("You've already sent us a few messages. Please try again later.");
 
   const input = await readJson(request, contactSchema);
-  await db
-    .prepare("INSERT INTO contact_messages (id, name, email, subject, message, status, created_at) VALUES (?, ?, ?, ?, ?, 'new', ?)")
-    .bind(randomId("msg"), input.name, input.email, input.subject || null, input.message, new Date().toISOString())
-    .run();
+  await db.contact_messages.insertOne({
+    _id: randomId("msg"),
+    name: input.name,
+    email: input.email,
+    subject: input.subject || null,
+    message: input.message,
+    status: "new",
+    created_at: new Date().toISOString(),
+  } as any);
 
   return json({ ok: true, message: "Thanks for writing in. We reply within one business day." }, { status: 201 });
 });

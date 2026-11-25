@@ -1,6 +1,6 @@
-import type { D1Database, D1PreparedStatement } from "../types-d1";
 import { randomId } from "../crypto";
-import { allRows, getDb } from "../db";
+import { getDb } from "../db";
+import type { Store } from "../db";
 import type { AuthContext } from "../auth";
 
 export interface AuditActor {
@@ -10,7 +10,6 @@ export interface AuditActor {
 
 export interface AuditEntry {
   actor: AuditActor;
-  /** Dotted action name, e.g. "order.status_changed" or "refund.approved". */
   action: string;
   entityType: string;
   entityId?: string | null;
@@ -35,29 +34,24 @@ export function auditActor(auth: AuthContext): AuditActor {
   return { id: auth.user.id, email: auth.user.email };
 }
 
-/** Batching form: the audit row commits with the change it describes, or not at all. */
-export function auditStatement(db: D1Database, entry: AuditEntry): D1PreparedStatement {
-  return db
-    .prepare(
-      `INSERT INTO admin_audit_log (id, actor_id, actor_email, action, entity_type, entity_id, summary, detail_json, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .bind(
-      randomId("aud"),
-      entry.actor.id,
-      entry.actor.email,
-      entry.action,
-      entry.entityType,
-      entry.entityId ?? null,
-      entry.summary,
-      entry.detail ? JSON.stringify(entry.detail) : null,
-      entry.at ?? new Date().toISOString(),
-    );
+export async function insertAuditLog(db: Store, entry: AuditEntry): Promise<void> {
+  const at = entry.at ?? new Date().toISOString();
+  await db.admin_audit_log.insertOne({
+    _id: randomId("aud"),
+    actor_id: entry.actor.id,
+    actor_email: entry.actor.email,
+    action: entry.action,
+    entity_type: entry.entityType,
+    entity_id: entry.entityId ?? null,
+    summary: entry.summary,
+    detail_json: entry.detail ? JSON.stringify(entry.detail) : null,
+    created_at: at,
+  } as any);
 }
 
 export async function recordAudit(entry: AuditEntry): Promise<void> {
   const db = await getDb();
-  await auditStatement(db, entry).run();
+  await insertAuditLog(db, entry);
 }
 
 export async function listAuditEntries(filter: {
@@ -66,40 +60,18 @@ export async function listAuditEntries(filter: {
   entityId?: string;
   action?: string;
 } = {}): Promise<AuditLogRow[]> {
-  const where: string[] = [];
-  const bindings: unknown[] = [];
-  if (filter.entityType) {
-    where.push("entity_type = ?");
-    bindings.push(filter.entityType);
-  }
-  if (filter.entityId) {
-    where.push("entity_id = ?");
-    bindings.push(filter.entityId);
-  }
-  if (filter.action) {
-    where.push("action = ?");
-    bindings.push(filter.action);
-  }
-  const rows = await allRows<{
-    id: string;
-    actor_id: string | null;
-    actor_email: string;
-    action: string;
-    entity_type: string;
-    entity_id: string | null;
-    summary: string;
-    detail_json: string | null;
-    created_at: string;
-  }>(
-    `SELECT id, actor_id, actor_email, action, entity_type, entity_id, summary, detail_json, created_at
-       FROM admin_audit_log
-       ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-      ORDER BY created_at DESC, id DESC LIMIT ?`,
-    [...bindings, Math.min(Math.max(filter.limit ?? 100, 1), 500)],
-  );
-
-  return rows.map((row) => ({
-    id: row.id,
+  const db = await getDb();
+  const query: Record<string, unknown> = {};
+  if (filter.entityType) query.entity_type = filter.entityType;
+  if (filter.entityId) query.entity_id = filter.entityId;
+  if (filter.action) query.action = filter.action;
+  const rows = await db.admin_audit_log
+    .find(query)
+    .sort({ created_at: -1, _id: -1 })
+    .limit(Math.min(Math.max(filter.limit ?? 100, 1), 500))
+    .toArray();
+  return rows.map((row: any) => ({
+    id: row._id,
     actorId: row.actor_id,
     actorEmail: row.actor_email,
     action: row.action,

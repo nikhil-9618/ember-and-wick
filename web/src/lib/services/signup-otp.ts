@@ -24,7 +24,7 @@ export interface SignupChallengeView {
 }
 
 interface ChallengeRow {
-  id: string;
+  _id: string;
   user_id: string;
   email: string;
   code_hash: string;
@@ -35,10 +35,6 @@ interface ChallengeRow {
 
 const GENERIC_CODE_ERROR = "That code is not valid. Check the six digits and try again.";
 
-/**
- * Step one of sign-up. The account row is created unverified and no session is
- * issued; a six-digit code is emailed to the address being claimed.
- */
 export async function startSignup(input: {
   name: string;
   email: string;
@@ -55,16 +51,12 @@ export async function startSignup(input: {
     throw rateLimited("Too many verification codes requested for this address. Try again later.");
   }
 
-  // Fail before hashing a password or touching the database if mail is missing.
   const mailIssue = await emailConfigIssue();
   if (mailIssue) {
     throw new ApiError("email_not_configured", mailIssue, 503);
   }
 
-  const existing = await db
-    .prepare("SELECT id, email_verified_at FROM users WHERE email = ?")
-    .bind(input.email)
-    .first<{ id: string; email_verified_at: string | null }>();
+  const existing = (await db.users.findOne({ email: input.email })) as { _id: string; email_verified_at: string | null } | null;
 
   if (existing?.email_verified_at) {
     throw new ApiError("conflict", "An account with this email already exists. Sign in instead.", 409);
@@ -76,22 +68,24 @@ export async function startSignup(input: {
   let userId: string;
 
   if (existing) {
-    // An earlier sign-up never proved ownership of this address: replace the
-    // details and issue a fresh code instead of locking the address out.
-    userId = existing.id;
-    await db
-      .prepare("UPDATE users SET password_hash = ?, name = ?, phone = ?, updated_at = ? WHERE id = ?")
-      .bind(passwordHash, input.name, phone, now.toISOString(), userId)
-      .run();
+    userId = existing._id;
+    await db.users.updateOne(
+      { _id: userId },
+      { $set: { password_hash: passwordHash, name: input.name, phone, updated_at: now.toISOString() } },
+    );
   } else {
     userId = randomId("usr");
-    await db
-      .prepare(
-        `INSERT INTO users (id, email, password_hash, name, phone, role, created_at, updated_at, email_verified_at)
-         VALUES (?, ?, ?, ?, ?, 'customer', ?, ?, NULL)`,
-      )
-      .bind(userId, input.email, passwordHash, input.name, phone, now.toISOString(), now.toISOString())
-      .run();
+    await db.users.insertOne({
+      _id: userId,
+      email: input.email,
+      password_hash: passwordHash,
+      name: input.name,
+      phone,
+      role: "customer",
+      created_at: now.toISOString(),
+      updated_at: now.toISOString(),
+      email_verified_at: null,
+    } as any);
   }
 
   const challengeId = randomId("sotp");
@@ -99,24 +93,26 @@ export async function startSignup(input: {
   const expiresAt = otpExpiryFrom(now);
   const codeHash = await hashOtpCode(challengeId, code);
 
-  // Superseded codes are revoked so only the newest one can verify the account.
-  await db
-    .prepare("UPDATE signup_otp_challenges SET consumed_at = ? WHERE user_id = ? AND consumed_at IS NULL")
-    .bind(now.toISOString(), userId)
-    .run();
-  await db
-    .prepare(
-      `INSERT INTO signup_otp_challenges (id, user_id, email, code_hash, attempts, ip, issued_at, expires_at)
-       VALUES (?, ?, ?, ?, 0, ?, ?, ?)`,
-    )
-    .bind(challengeId, userId, input.email, codeHash, input.ip, now.toISOString(), expiresAt)
-    .run();
+  await db.signup_otp_challenges.updateMany(
+    { user_id: userId, consumed_at: null },
+    { $set: { consumed_at: now.toISOString() } },
+  );
+  await db.signup_otp_challenges.insertOne({
+    _id: challengeId,
+    user_id: userId,
+    email: input.email,
+    code_hash: codeHash,
+    attempts: 0,
+    ip: input.ip,
+    issued_at: now.toISOString(),
+    expires_at: expiresAt,
+    consumed_at: null,
+  } as any);
 
   try {
     await sendVerificationEmail(input.email, code);
   } catch (error) {
-    // A code nobody received must not sit around as a usable challenge.
-    await db.prepare("DELETE FROM signup_otp_challenges WHERE id = ?").bind(challengeId).run();
+    await db.signup_otp_challenges.deleteOne({ _id: challengeId });
     throw error;
   }
 
@@ -129,7 +125,6 @@ export async function startSignup(input: {
   };
 }
 
-/** Step two: verify the emailed code, mark the account verified, start a session. */
 export async function verifySignupOtp(input: {
   challengeId: string;
   code: string;
@@ -143,13 +138,7 @@ export async function verifySignupOtp(input: {
     throw rateLimited("Too many code attempts. Please wait a few minutes and try again.");
   }
 
-  const challenge = await db
-    .prepare(
-      `SELECT id, user_id, email, code_hash, attempts, expires_at, consumed_at
-         FROM signup_otp_challenges WHERE id = ?`,
-    )
-    .bind(input.challengeId)
-    .first<ChallengeRow>();
+  const challenge = (await db.signup_otp_challenges.findOne({ _id: input.challengeId })) as ChallengeRow | null;
 
   if (!challenge || challenge.consumed_at) {
     throw unauthenticated("This verification code has already been used. Request a new one.");
@@ -161,12 +150,9 @@ export async function verifySignupOtp(input: {
     throw unauthenticated("Too many incorrect attempts on this code. Request a new one.");
   }
 
-  const submitted = await hashOtpCode(challenge.id, input.code);
+  const submitted = await hashOtpCode(challenge._id, input.code);
   if (!matchesOtp(challenge.code_hash, submitted)) {
-    await db
-      .prepare("UPDATE signup_otp_challenges SET attempts = attempts + 1 WHERE id = ?")
-      .bind(challenge.id)
-      .run();
+    await db.signup_otp_challenges.updateOne({ _id: challenge._id }, { $inc: { attempts: 1 } });
     const remaining = OTP_MAX_ATTEMPTS - (challenge.attempts + 1);
     throw unauthenticated(
       remaining > 0
@@ -175,36 +161,40 @@ export async function verifySignupOtp(input: {
     );
   }
 
-  // Claim the challenge atomically: a replayed request can never verify twice.
-  const claimed = await db
-    .prepare("UPDATE signup_otp_challenges SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL")
-    .bind(new Date().toISOString(), challenge.id)
-    .run();
-  if ((claimed.meta.changes ?? 0) === 0) {
+  const claimed = await db.signup_otp_challenges.updateOne(
+    { _id: challenge._id, consumed_at: null },
+    { $set: { consumed_at: new Date().toISOString() } },
+  );
+  if ((claimed as any).modifiedCount === 0) {
     throw unauthenticated("This verification code has already been used. Request a new one.");
   }
 
   const now = new Date().toISOString();
-  await db
-    .prepare("UPDATE users SET email_verified_at = COALESCE(email_verified_at, ?), updated_at = ? WHERE id = ?")
-    .bind(now, now, challenge.user_id)
-    .run();
+  await db.users.updateOne({ _id: challenge.user_id }, { $set: { updated_at: now } });
+  await db.users.updateOne({ _id: challenge.user_id, email_verified_at: null }, { $set: { email_verified_at: now } });
 
-  const user = await db
-    .prepare("SELECT id, email, name, phone, role, created_at FROM users WHERE id = ?")
-    .bind(challenge.user_id)
-    .first<SessionUser>();
+  const user = (await db.users.findOne({ _id: challenge.user_id })) as any;
   if (!user) throw unauthenticated("This account is no longer available.");
 
-  await touchCartForUser(user.id);
-  const session = await createSession(db, user.id, input.userAgent);
+  await touchCartForUser(user._id);
+  const session = await createSession(db, user._id, input.userAgent);
 
-  return { user, token: session.token, expiresAt: session.expiresAt };
+  return {
+    user: {
+      id: user._id,
+      email: user.email,
+      name: user.name,
+      phone: user.phone,
+      role: user.role,
+      created_at: user.created_at,
+    },
+    token: session.token,
+    expiresAt: session.expiresAt,
+  };
 }
 
-/** Housekeeping: drop verification codes that expired more than a day ago. */
 export async function pruneSignupChallenges(): Promise<void> {
   const db = await getDb();
   const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  await db.prepare("DELETE FROM signup_otp_challenges WHERE expires_at < ?").bind(cutoff).run();
+  await db.signup_otp_challenges.deleteMany({ expires_at: { $lt: cutoff } } as any);
 }

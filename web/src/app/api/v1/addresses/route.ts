@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { firstRow, getDb } from "@/lib/db";
+import { getDb } from "@/lib/db";
 import { randomId } from "@/lib/crypto";
 import { assertSameOrigin, apiRoute, json, readJson } from "@/lib/http";
 import { addressSchema } from "@/lib/validation";
@@ -17,37 +17,31 @@ export const POST = apiRoute(async (request) => {
   const input = await readJson(request, addressSchema);
   const db = await getDb();
 
-  const count = await firstRow<{ total: number }>("SELECT COUNT(*) AS total FROM addresses WHERE user_id = ?", [user.id]);
-  const makeDefault = input.isDefault === true || (count?.total ?? 0) === 0;
+  const count = await db.addresses.countDocuments({ user_id: user.id });
+  const makeDefault = input.isDefault === true || count === 0;
   const now = new Date().toISOString();
   const id = randomId("adr");
 
   if (makeDefault) {
-    await db.prepare("UPDATE addresses SET is_default = 0 WHERE user_id = ?").bind(user.id).run();
+    await db.addresses.updateMany({ user_id: user.id }, { $set: { is_default: 0 } });
   }
 
-  await db
-    .prepare(
-      `INSERT INTO addresses (id, user_id, label, full_name, phone, line1, line2, city, state, postal_code, country, is_default, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .bind(
-      id,
-      user.id,
-      input.label || null,
-      input.fullName,
-      input.phone,
-      input.line1,
-      input.line2 || null,
-      input.city,
-      input.state,
-      input.postalCode,
-      input.country || "IN",
-      makeDefault ? 1 : 0,
-      now,
-      now,
-    )
-    .run();
+  await db.addresses.insertOne({
+    _id: id,
+    user_id: user.id,
+    label: input.label || null,
+    full_name: input.fullName,
+    phone: input.phone,
+    line1: input.line1,
+    line2: input.line2 || null,
+    city: input.city,
+    state: input.state,
+    postal_code: input.postalCode,
+    country: input.country || "IN",
+    is_default: makeDefault ? 1 : 0,
+    created_at: now,
+    updated_at: now,
+  } as any);
 
   return json({ addresses: await listAddresses(user.id) }, { status: 201 });
 });
@@ -57,16 +51,11 @@ export const PATCH = apiRoute(async (request) => {
   const { user } = await requireUser(request);
   const input = await readJson(request, z.object({ addressId: z.string().min(3).max(80) }));
   const db = await getDb();
-  const existing = await db
-    .prepare("SELECT id FROM addresses WHERE id = ? AND user_id = ?")
-    .bind(input.addressId, user.id)
-    .first<{ id: string }>();
+  const existing = await db.addresses.findOne({ _id: input.addressId, user_id: user.id });
   if (!existing) {
     return json({ error: { code: "not_found", message: "Address not found." } }, { status: 404 });
   }
-  await db.batch([
-    db.prepare("UPDATE addresses SET is_default = 0 WHERE user_id = ?").bind(user.id),
-    db.prepare("UPDATE addresses SET is_default = 1, updated_at = ? WHERE id = ?").bind(new Date().toISOString(), input.addressId),
-  ]);
+  await db.addresses.updateMany({ user_id: user.id }, { $set: { is_default: 0 } });
+  await db.addresses.updateOne({ _id: input.addressId }, { $set: { is_default: 1, updated_at: new Date().toISOString() } });
   return json({ addresses: await listAddresses(user.id) });
 });

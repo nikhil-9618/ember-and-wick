@@ -10,14 +10,10 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "cf:build": "opennextjs-cloudflare build --skipBuild",
-    "db:reset:local": "node scripts/migrate-local.mjs && node scripts/seed.mjs",
-    "db:migrate:local": "node scripts/migrate-local.mjs",
-    "db:seed:local": "node scripts/seed.mjs",
-    "db:migrate:remote": "node scripts/migrate-local.mjs --remote"
+    "cf:build": "opennextjs-cloudflare build --skipBuild"
   },
   "dependencies": {
-    "@libsql/client": "^0.18.0",
+    "mongodb": "^7.9.1",
     "next": "^16.4.6",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

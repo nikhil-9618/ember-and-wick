@@ -5,16 +5,11 @@ import { checkRateLimit } from "../rate-limit";
 import { createSession, touchCartForUser, type SessionUser } from "../auth";
 
 interface LoginRow {
-  id: string;
+  _id: string;
   password_hash: string;
   email_verified_at: string | null;
 }
 
-/**
- * Conditional sign-in. Password only: the account's email address was verified
- * once at sign-up, so a second code on every sign-in would add nothing but
- * friction. Unverified accounts cannot sign in and are told why.
- */
 export async function loginWithPassword(input: {
   email: string;
   password: string;
@@ -29,10 +24,7 @@ export async function loginWithPassword(input: {
     throw rateLimited("Too many sign-in attempts. Please wait a few minutes and try again.");
   }
 
-  const row = await db
-    .prepare("SELECT id, password_hash, email_verified_at FROM users WHERE email = ?")
-    .bind(input.email)
-    .first<LoginRow>();
+  const row = (await db.users.findOne({ email: input.email })) as LoginRow | null;
 
   if (!row) {
     await fakeVerify();
@@ -50,14 +42,22 @@ export async function loginWithPassword(input: {
     );
   }
 
-  await touchCartForUser(row.id);
-  const session = await createSession(db, row.id, input.userAgent);
+  await touchCartForUser(row._id);
+  const session = await createSession(db, row._id, input.userAgent);
 
-  const user = await db
-    .prepare("SELECT id, email, name, phone, role, created_at FROM users WHERE id = ?")
-    .bind(row.id)
-    .first<SessionUser>();
+  const user = (await db.users.findOne({ _id: row._id })) as any;
   if (!user) throw unauthenticated("This account is no longer available.");
 
-  return { user, token: session.token, expiresAt: session.expiresAt };
+  return {
+    user: {
+      id: user._id,
+      email: user.email,
+      name: user.name,
+      phone: user.phone,
+      role: user.role,
+      created_at: user.created_at,
+    },
+    token: session.token,
+    expiresAt: session.expiresAt,
+  };
 }

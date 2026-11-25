@@ -1,4 +1,4 @@
-import { allRows, getDb } from "@/lib/db";
+import { getDb } from "@/lib/db";
 import { randomId } from "@/lib/crypto";
 import { assertSameOrigin, apiRoute, json, readJson } from "@/lib/http";
 import { couponSchema } from "@/lib/validation";
@@ -8,12 +8,9 @@ import { auditActor, recordAudit } from "@/lib/services/audit";
 
 export const GET = apiRoute(async (request) => {
   await requireAdmin(request);
-  const coupons = await allRows(
-    `SELECT id, code, description, type, value, min_subtotal, max_discount, usage_limit, used_count,
-            starts_at, ends_at, is_active, created_at
-       FROM coupons ORDER BY created_at DESC`,
-  );
-  return json({ coupons });
+  const db = await getDb();
+  const coupons = await db.coupons.find({}).sort({ created_at: -1 }).toArray();
+  return json({ coupons: (coupons as any[]).map((c) => ({ ...c, id: c._id })) });
 });
 
 export const POST = apiRoute(async (request) => {
@@ -36,31 +33,26 @@ export const POST = apiRoute(async (request) => {
   }
 
   const id = randomId("cpn");
+  const now = new Date().toISOString();
   try {
-    await db
-      .prepare(
-        `INSERT INTO coupons (id, code, description, type, value, min_subtotal, max_discount, usage_limit,
-                              used_count, starts_at, ends_at, is_active, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
-      )
-      .bind(
-        id,
-        input.code,
-        input.description || null,
-        input.type,
-        input.value,
-        input.minSubtotal,
-        input.maxDiscount ?? null,
-        input.usageLimit ?? null,
-        input.startsAt ?? null,
-        input.endsAt ?? null,
-        input.isActive ? 1 : 0,
-        new Date().toISOString(),
-      )
-      .run();
+    await db.coupons.insertOne({
+      _id: id,
+      code: input.code,
+      description: input.description || null,
+      type: input.type,
+      value: input.value,
+      min_subtotal: input.minSubtotal,
+      max_discount: input.maxDiscount ?? null,
+      usage_limit: input.usageLimit ?? null,
+      used_count: 0,
+      starts_at: input.startsAt ?? null,
+      ends_at: input.endsAt ?? null,
+      is_active: input.isActive ? 1 : 0,
+      created_at: now,
+    } as any);
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
-    if (/UNIQUE constraint failed/i.test(message)) throw conflict("That coupon code already exists.");
+    if (/duplicate key|E11000/i.test(message)) throw conflict("That coupon code already exists.");
     throw error;
   }
 

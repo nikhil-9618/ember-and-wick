@@ -1,4 +1,4 @@
-import { allRows, firstRow } from "../db";
+import { getDb } from "../db";
 
 export interface AdminVariant {
   id: string;
@@ -31,66 +31,37 @@ export interface AdminProduct {
 }
 
 export async function getAdminProduct(id: string): Promise<AdminProduct | null> {
-  const product = await firstRow<{
-    id: string;
-    slug: string;
-    name: string;
-    tagline: string | null;
-    description: string;
-    category_id: string | null;
-    wax_type: string | null;
-    wick_type: string | null;
-    burn_time_hours: number | null;
-    scent_notes: string | null;
-    base_price: number;
-    compare_at_price: number | null;
-    status: string;
-    is_featured: number;
-  }>("SELECT * FROM products WHERE id = ?", [id]);
+  const db = await getDb();
+  const product = await db.products.findOne({ _id: id });
   if (!product) return null;
-
-  const [images, variants] = await Promise.all([
-    allRows<{ url: string; alt: string }>(
-      "SELECT url, alt FROM product_images WHERE product_id = ? ORDER BY position ASC",
-      [id],
-    ),
-    allRows<{
-      id: string;
-      name: string;
-      sku: string;
-      price: number;
-      stock: number;
-      weight_grams: number | null;
-      low_stock_threshold: number;
-      is_active: number;
-    }>("SELECT * FROM product_variants WHERE product_id = ? ORDER BY position ASC", [id]),
-  ]);
-
+  const p = product as any;
+  const images = await db.product_images.find({ product_id: id }).sort({ position: 1 }).toArray();
+  const variants = await db.product_variants.find({ product_id: id }).sort({ position: 1 }).toArray();
   return {
-    id: product.id,
-    slug: product.slug,
-    name: product.name,
-    tagline: product.tagline,
-    description: product.description,
-    categoryId: product.category_id,
-    waxType: product.wax_type,
-    wickType: product.wick_type,
-    burnTimeHours: product.burn_time_hours,
-    scentNotes: product.scent_notes,
-    basePrice: product.base_price,
-    compareAtPrice: product.compare_at_price,
-    status: product.status,
-    isFeatured: product.is_featured === 1,
-    images,
-    variants: variants.map((variant) => ({
-      id: variant.id,
-      name: variant.name,
-      sku: variant.sku,
-      price: variant.price,
-      stock: variant.stock,
-      weightGrams: variant.weight_grams,
-      lowStockThreshold: variant.low_stock_threshold,
-      isActive: variant.is_active === 1,
+    id: p._id,
+    slug: p.slug,
+    name: p.name,
+    tagline: p.tagline,
+    description: p.description,
+    categoryId: p.category_id,
+    waxType: p.wax_type,
+    wickType: p.wick_type,
+    burnTimeHours: p.burn_time_hours,
+    scentNotes: p.scent_notes,
+    basePrice: p.base_price,
+    compareAtPrice: p.compare_at_price,
+    status: p.status,
+    isFeatured: p.is_featured === 1,
+    images: (images as any[]).map((i) => ({ url: i.url, alt: i.alt })),
+    variants: (variants as any[]).map((v) => ({
+      id: v._id,
+      name: v.name,
+      sku: v.sku,
+      price: v.price,
+      stock: v.stock,
+      weightGrams: v.weight_grams,
+      lowStockThreshold: v.low_stock_threshold,
+      isActive: v.is_active === 1,
     })),
   };
 }

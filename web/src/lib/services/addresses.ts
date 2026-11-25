@@ -1,4 +1,4 @@
-import { allRows } from "../db";
+import { getDb } from "../db";
 
 export interface AddressView {
   id: string;
@@ -15,25 +15,10 @@ export interface AddressView {
 }
 
 export async function listAddresses(userId: string): Promise<AddressView[]> {
-  const rows = await allRows<{
-    id: string;
-    label: string | null;
-    full_name: string;
-    phone: string;
-    line1: string;
-    line2: string | null;
-    city: string;
-    state: string;
-    postal_code: string;
-    country: string;
-    is_default: number;
-  }>(
-    `SELECT id, label, full_name, phone, line1, line2, city, state, postal_code, country, is_default
-       FROM addresses WHERE user_id = ? ORDER BY is_default DESC, created_at DESC`,
-    [userId],
-  );
-  return rows.map((row) => ({
-    id: row.id,
+  const db = await getDb();
+  const rows = await db.addresses.find({ user_id: userId }).sort({ is_default: -1, created_at: -1 }).toArray();
+  return (rows as any[]).map((row) => ({
+    id: row._id,
     label: row.label,
     fullName: row.full_name,
     phone: row.phone,

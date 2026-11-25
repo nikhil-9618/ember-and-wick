@@ -1,19 +1,15 @@
-import { allRows, firstRow, getDb } from "../db";
+import { withTransaction, isDuplicateKeyError } from "../db";
 import { randomId, sha256Hex } from "../crypto";
 import { ApiError, badRequest, notFound } from "../errors";
 import { getPaymentConfig } from "../config";
-import {
-  createRazorpayOrder,
-  verifyPaymentSignature,
-  verifyWebhookSignature,
-} from "../payments/razorpay";
+import { createRazorpayOrder, verifyPaymentSignature, verifyWebhookSignature } from "../payments/razorpay";
 import { releaseOrder } from "./checkout";
-import { notificationStatement } from "./notify";
-import { statusHistoryStatement, SYSTEM_ACTOR, type StatusActor } from "../history";
-import type { D1PreparedStatement } from "../types-d1";
+import { insertNotification } from "./notify";
+import { insertStatusHistory } from "../history";
+import type { StatusActor } from "../history";
 
 interface OrderRow {
-  id: string;
+  _id: string;
   number: string;
   user_id: string | null;
   status: string;
@@ -24,30 +20,36 @@ interface OrderRow {
 }
 
 async function loadOrderByNumber(number: string): Promise<OrderRow | null> {
-  return firstRow<OrderRow>(
-    "SELECT id, number, user_id, status, payment_status, total, coupon_code, email FROM orders WHERE number = ?",
-    [number],
-  );
+  const db = await (await import("../db")).getDb();
+  const row = await db.orders.findOne({ number });
+  return row ? mapOrder(row) : null;
 }
 
 async function loadOrderById(id: string): Promise<OrderRow | null> {
-  return firstRow<OrderRow>(
-    "SELECT id, number, user_id, status, payment_status, total, coupon_code, email FROM orders WHERE id = ?",
-    [id],
-  );
+  const db = await (await import("../db")).getDb();
+  const row = await db.orders.findOne({ _id: id });
+  return row ? mapOrder(row) : null;
 }
 
-/**
- * Marks an order paid exactly once. Safe to call from both the client-side
- * verification route and the webhook, in either order: the status guard and the
- * UNIQUE provider_payment_id index make double-processing impossible.
- */
+function mapOrder(row: any): OrderRow {
+  return {
+    _id: row._id,
+    number: row.number,
+    user_id: row.user_id,
+    status: row.status,
+    payment_status: row.payment_status,
+    total: row.total,
+    coupon_code: row.coupon_code,
+    email: row.email,
+  };
+}
+
 export async function markOrderPaid(
   orderId: string,
   payment: { providerPaymentId: string | null; method?: string | null },
-  actor: StatusActor = SYSTEM_ACTOR,
+  actor: StatusActor = { type: "system", label: "Ember & Wick" },
 ): Promise<{ changed: boolean }> {
-  const db = await getDb();
+  const db = await (await import("../db")).getDb();
   const order = await loadOrderById(orderId);
   if (!order) throw notFound("Order not found.");
 
@@ -57,65 +59,57 @@ export async function markOrderPaid(
   }
 
   const now = new Date().toISOString();
-  const statements: D1PreparedStatement[] = [
-    db
-      .prepare(
-        "UPDATE orders SET status = 'paid', payment_status = 'paid', paid_at = ?, updated_at = ? WHERE id = ? AND payment_status != 'paid'",
-      )
-      .bind(now, now, orderId),
-  ];
-
-  if (payment.providerPaymentId) {
-    // Only the newest attempt carries the provider payment id. Stamping every
-    // attempt for the order would collide with the UNIQUE index on
-    // provider_payment_id as soon as a payment had been retried.
-    statements.push(
-      db
-        .prepare(
-          `UPDATE payments SET provider_payment_id = ?, status = 'captured', method = ?, updated_at = ?
-            WHERE id = (SELECT id FROM payments
-                         WHERE order_id = ? AND status IN ('created','authorized','failed')
-                         ORDER BY created_at DESC, rowid DESC LIMIT 1)`,
-        )
-        .bind(payment.providerPaymentId, payment.method ?? null, now, orderId),
-    );
-  } else {
-    statements.push(
-      db
-        .prepare("UPDATE payments SET status = 'captured', updated_at = ? WHERE order_id = ? AND status != 'refunded'")
-        .bind(now, orderId),
-    );
-  }
-
-  statements.push(
-    statusHistoryStatement(db, {
-      orderId,
-      fromStatus: order.status,
-      toStatus: "paid",
-      actor,
-      reason: "Payment captured",
-      at: now,
-    }),
-  );
-
-  if (order.user_id) {
-    statements.push(
-      notificationStatement(db, {
-        userId: order.user_id,
-        type: "order_paid",
-        title: `Payment received for ${order.number}`,
-        body: "We're getting your candles ready. You'll get another update when your order ships.",
-        data: { orderNumber: order.number },
-      }),
-    );
-  }
-
   try {
-    await db.batch(statements);
+    await withTransaction(async (tx) => {
+      const res = await tx.orders.updateOne(
+        { _id: orderId, payment_status: { $ne: "paid" } },
+        { $set: { status: "paid", payment_status: "paid", paid_at: now, updated_at: now } },
+      );
+      if ((res as any).modifiedCount === 0) return;
+
+      if (payment.providerPaymentId) {
+        // stamp the newest created/authorized/failed payment
+        const pays = await tx.payments
+          .find({ order_id: orderId, status: { $in: ["created", "authorized", "failed"] } })
+          .sort({ created_at: -1, _id: -1 })
+          .limit(1)
+          .toArray();
+        const pay = (pays as any[])[0];
+        if (pay) {
+          await tx.payments.updateOne(
+            { _id: pay._id },
+            { $set: { provider_payment_id: payment.providerPaymentId, status: "captured", method: payment.method ?? null, updated_at: now } },
+          );
+        }
+      } else {
+        await tx.payments.updateMany(
+          { order_id: orderId, status: { $ne: "refunded" } },
+          { $set: { status: "captured", updated_at: now } },
+        );
+      }
+
+      await insertStatusHistory(tx, {
+        orderId,
+        fromStatus: order.status,
+        toStatus: "paid",
+        actor,
+        reason: "Payment captured",
+        at: now,
+      });
+
+      if (order.user_id) {
+        await insertNotification(tx, {
+          userId: order.user_id,
+          type: "order_paid",
+          title: `Payment received for ${order.number}`,
+          body: "We're getting your candles ready. You'll get another update when your order ships.",
+          data: { orderNumber: order.number },
+        });
+      }
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (/UNIQUE constraint failed/i.test(message)) {
-      // The same payment id was already attached to another order: refuse it.
+    if (/duplicate key|E11000/i.test(message)) {
       throw new ApiError("payment_error", "This payment has already been used for another order.", 409);
     }
     throw error;
@@ -127,32 +121,30 @@ export async function markOrderPaid(
 export async function markPaymentFailed(
   orderId: string,
   detail: { code?: string | null; description?: string | null },
-  actor: StatusActor = SYSTEM_ACTOR,
+  actor: StatusActor = { type: "system", label: "Ember & Wick" },
 ): Promise<void> {
-  const db = await getDb();
+  const db = await (await import("../db")).getDb();
   const order = await loadOrderById(orderId);
   if (!order || order.payment_status === "paid" || order.status === "cancelled") return;
   const now = new Date().toISOString();
-  await db.batch([
-    db
-      .prepare(
-        "UPDATE orders SET status = 'payment_failed', payment_status = 'failed', updated_at = ? WHERE id = ? AND payment_status = 'unpaid'",
-      )
-      .bind(now, orderId),
-    db
-      .prepare(
-        "UPDATE payments SET status = 'failed', error_code = ?, error_description = ?, updated_at = ? WHERE order_id = ? AND status = 'created'",
-      )
-      .bind(detail.code ?? null, detail.description ?? null, now, orderId),
-    statusHistoryStatement(db, {
+  await withTransaction(async (tx) => {
+    await tx.orders.updateOne(
+      { _id: orderId, payment_status: "unpaid" },
+      { $set: { status: "payment_failed", payment_status: "failed", updated_at: now } },
+    );
+    await tx.payments.updateMany(
+      { order_id: orderId, status: "created" },
+      { $set: { status: "failed", error_code: detail.code ?? null, error_description: detail.description ?? null, updated_at: now } },
+    );
+    await insertStatusHistory(tx, {
       orderId,
       fromStatus: order.status,
       toStatus: "payment_failed",
       actor,
       reason: detail.description ? detail.description.slice(0, 300) : "Payment failed",
       at: now,
-    }),
-  ]);
+    });
+  });
 }
 
 export async function confirmPayment(input: {
@@ -173,15 +165,18 @@ export async function confirmPayment(input: {
     return { orderNumber: order.number, status: "paid", alreadyProcessed: true };
   }
 
-  const paymentRow = await firstRow<{ id: string; provider_order_id: string | null; amount: number }>(
-    "SELECT id, provider_order_id, amount FROM payments WHERE order_id = ? ORDER BY created_at DESC LIMIT 1",
-    [order.id],
-  );
-  if (!paymentRow) throw notFound("No payment is attached to this order.");
-  if (paymentRow.provider_order_id !== input.providerOrderId) {
+  const db = await (await import("../db")).getDb();
+  const paymentRow = await db.payments
+    .find({ order_id: order._id })
+    .sort({ created_at: -1 })
+    .limit(1)
+    .toArray();
+  const prow = (paymentRow as any[])[0];
+  if (!prow) throw notFound("No payment is attached to this order.");
+  if (prow.provider_order_id !== input.providerOrderId) {
     throw badRequest("This payment does not belong to the order.");
   }
-  if (paymentRow.amount !== order.total) {
+  if (prow.amount !== order.total) {
     throw new ApiError("payment_error", "The paid amount does not match the order total.", 409);
   }
 
@@ -195,7 +190,7 @@ export async function confirmPayment(input: {
     throw new ApiError("payment_error", "Payment signature verification failed. Nothing was confirmed.", 400);
   }
 
-  const result = await markOrderPaid(order.id, { providerPaymentId: input.providerPaymentId }, {
+  const result = await markOrderPaid(order._id, { providerPaymentId: input.providerPaymentId }, {
     type: "customer",
     id: input.userId,
     label: order.email,
@@ -203,7 +198,6 @@ export async function confirmPayment(input: {
   return { orderNumber: order.number, status: "paid", alreadyProcessed: !result.changed };
 }
 
-/** Creates a fresh provider order so a failed payment can be retried. */
 export async function retryPaymentIntent(
   userId: string,
   orderNumber: string,
@@ -220,39 +214,43 @@ export async function retryPaymentIntent(
     throw badRequest("This order can no longer be paid online.");
   }
 
-  const db = await getDb();
+  const db = await (await import("../db")).getDb();
   const now = new Date().toISOString();
-
-  const retryStatements = [
-    db
-      .prepare("UPDATE orders SET status = 'pending_payment', payment_status = 'unpaid', updated_at = ? WHERE id = ?")
-      .bind(now, order.id),
-    ...(order.status === "pending_payment"
-      ? []
-      : [
-          statusHistoryStatement(db, {
-            orderId: order.id,
-            fromStatus: order.status,
-            toStatus: "pending_payment",
-            actor: { type: "customer", id: userId, label: order.email },
-            reason: "Payment retried",
-            at: now,
-          }),
-        ]),
-  ];
 
   if (config.mode === "test") {
     const provider = "test";
-    const providerOrderId = `${provider}_${order.id}_${randomId("rt").slice(-6)}`;
-    await db.batch([
-      db
-        .prepare(
-          `INSERT INTO payments (id, order_id, provider, provider_order_id, amount, currency, status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, 'INR', 'created', ?, ?)`,
-        )
-        .bind(randomId("pay"), order.id, provider, providerOrderId, order.total, now, now),
-      ...retryStatements,
-    ]);
+    const providerOrderId = `${provider}_${order._id}_${randomId("rt").slice(-6)}`;
+    await withTransaction(async (tx) => {
+      await tx.payments.insertOne({
+        _id: randomId("pay"),
+        order_id: order._id,
+        provider,
+        provider_order_id: providerOrderId,
+        provider_payment_id: null,
+        amount: order.total,
+        currency: "INR",
+        status: "created",
+        method: null,
+        error_code: null,
+        error_description: null,
+        created_at: now,
+        updated_at: now,
+      } as any);
+      await tx.orders.updateOne(
+        { _id: order._id },
+        { $set: { status: "pending_payment", payment_status: "unpaid", updated_at: now } },
+      );
+      if (order.status !== "pending_payment") {
+        await insertStatusHistory(tx, {
+          orderId: order._id,
+          fromStatus: order.status,
+          toStatus: "pending_payment",
+          actor: { type: "customer", id: userId, label: order.email },
+          reason: "Payment retried",
+          at: now,
+        });
+      }
+    });
     return { provider, keyId: null, providerOrderId, amount: order.total, currency: "INR" };
   }
 
@@ -260,23 +258,44 @@ export async function retryPaymentIntent(
     amount: order.total,
     currency: "INR",
     receipt: order.number,
-    notes: { orderId: order.id, retry: "true" },
+    notes: { orderId: order._id, retry: "true" },
     keyId: config.keyId!,
     keySecret: config.keySecret!,
   });
-  await db.batch([
-    db
-      .prepare(
-        `INSERT INTO payments (id, order_id, provider, provider_order_id, amount, currency, status, created_at, updated_at)
-         VALUES (?, ?, 'razorpay', ?, ?, 'INR', 'created', ?, ?)`,
-      )
-      .bind(randomId("pay"), order.id, rzp.id, order.total, now, now),
-    ...retryStatements,
-  ]);
+  await withTransaction(async (tx) => {
+    await tx.payments.insertOne({
+      _id: randomId("pay"),
+      order_id: order._id,
+      provider: "razorpay",
+      provider_order_id: rzp.id,
+      provider_payment_id: null,
+      amount: order.total,
+      currency: "INR",
+      status: "created",
+      method: null,
+      error_code: null,
+      error_description: null,
+      created_at: now,
+      updated_at: now,
+    } as any);
+    await tx.orders.updateOne(
+      { _id: order._id },
+      { $set: { status: "pending_payment", payment_status: "unpaid", updated_at: now } },
+    );
+    if (order.status !== "pending_payment") {
+      await insertStatusHistory(tx, {
+        orderId: order._id,
+        fromStatus: order.status,
+        toStatus: "pending_payment",
+        actor: { type: "customer", id: userId, label: order.email },
+        reason: "Payment retried",
+        at: now,
+      });
+    }
+  });
   return { provider: "razorpay", keyId: config.keyId, providerOrderId: rzp.id, amount: order.total, currency: "INR" };
 }
 
-/** Test-mode confirmation. Refused unless PAYMENT_PROVIDER=test outside production. */
 export async function confirmTestPayment(userId: string, orderNumber: string): Promise<void> {
   const config = await getPaymentConfig();
   if (config.mode !== "test") {
@@ -285,8 +304,8 @@ export async function confirmTestPayment(userId: string, orderNumber: string): P
   const order = await loadOrderByNumber(orderNumber);
   if (!order || order.user_id !== userId) throw notFound("Order not found.");
   await markOrderPaid(
-    order.id,
-    { providerPaymentId: `test_payment_${order.id}`, method: "test" },
+    order._id,
+    { providerPaymentId: `test_payment_${order._id}`, method: "test" },
     { type: "customer", id: userId, label: order.email },
   );
 }
@@ -296,11 +315,6 @@ export interface WebhookOutcome {
   body: { received: boolean; outcome: string };
 }
 
-/**
- * Razorpay webhook receiver. The raw body is verified with HMAC-SHA256 before a
- * single byte is trusted. Events are deduplicated by (provider, event id) so
- * Razorpay's at-least-once delivery cannot double-apply a payment or refund.
- */
 export async function handleRazorpayWebhook(
   rawBody: string,
   signature: string | null,
@@ -312,20 +326,10 @@ export async function handleRazorpayWebhook(
   }
   if (!signature) throw new ApiError("forbidden", "Missing webhook signature.", 401);
 
-  const valid = await verifyWebhookSignature({
-    rawBody,
-    signature,
-    secret: config.webhookSecret,
-  });
+  const valid = await verifyWebhookSignature({ rawBody, signature, secret: config.webhookSecret });
   if (!valid) throw new ApiError("forbidden", "Invalid webhook signature.", 401);
 
-  let event: {
-    event?: string;
-    payload?: {
-      payment?: { entity?: { id?: string; order_id?: string; method?: string; error_code?: string; error_description?: string; amount?: number } };
-      refund?: { entity?: { id?: string; payment_id?: string; amount?: number } };
-    };
-  };
+  let event: any;
   try {
     event = JSON.parse(rawBody);
   } catch {
@@ -334,29 +338,32 @@ export async function handleRazorpayWebhook(
 
   const eventType = event.event ?? "unknown";
   const eventId = eventIdHeader ?? (await sha256Hex(rawBody));
-  const db = await getDb();
+  const db = await (await import("../db")).getDb();
+  const now = new Date().toISOString();
 
-  const inserted = await db
-    .prepare(
-      `INSERT INTO webhook_events (id, provider, event_id, event_type, status, created_at)
-       VALUES (?, 'razorpay', ?, ?, 'received', ?)
-       ON CONFLICT(provider, event_id) DO NOTHING`,
-    )
-    .bind(randomId("wh"), eventId, eventType, new Date().toISOString())
-    .run();
-
-  if ((inserted.meta.changes ?? 0) === 0) {
-    return { status: 200, body: { received: true, outcome: "duplicate_ignored" } };
+  try {
+    await db.webhook_events.insertOne({
+      _id: randomId("wh"),
+      provider: "razorpay",
+      event_id: eventId,
+      event_type: eventType,
+      status: "received",
+      error: null,
+      created_at: now,
+      processed_at: null,
+    } as any);
+  } catch (error) {
+    if (isDuplicateKeyError(error)) {
+      return { status: 200, body: { received: true, outcome: "duplicate_ignored" } };
+    }
+    throw error;
   }
 
   let outcome = "ignored";
   try {
     const payment = event.payload?.payment?.entity;
     if (payment?.order_id && (eventType === "payment.captured" || eventType === "order.paid")) {
-      const row = await firstRow<{ order_id: string }>(
-        "SELECT order_id FROM payments WHERE provider_order_id = ?",
-        [payment.order_id],
-      );
+      const row = await db.payments.findOne({ provider_order_id: payment.order_id });
       if (row) {
         const result = await markOrderPaid(
           row.order_id,
@@ -366,10 +373,7 @@ export async function handleRazorpayWebhook(
         outcome = result.changed ? "order_marked_paid" : "already_paid";
       }
     } else if (payment?.order_id && eventType === "payment.failed") {
-      const row = await firstRow<{ order_id: string }>(
-        "SELECT order_id FROM payments WHERE provider_order_id = ?",
-        [payment.order_id],
-      );
+      const row = await db.payments.findOne({ provider_order_id: payment.order_id });
       if (row) {
         await markPaymentFailed(
           row.order_id,
@@ -380,24 +384,22 @@ export async function handleRazorpayWebhook(
       }
     } else if (eventType.startsWith("refund.") && event.payload?.refund?.entity?.id) {
       const refundId = event.payload.refund.entity.id;
-      await db
-        .prepare(
-          "UPDATE refunds SET status = 'completed', provider_refund_id = ?, processed_at = ?, updated_at = ? WHERE provider_refund_id = ?",
-        )
-        .bind(refundId, new Date().toISOString(), new Date().toISOString(), refundId)
-        .run();
+      await db.refunds.updateOne(
+        { provider_refund_id: refundId },
+        { $set: { status: "completed", provider_refund_id: refundId, processed_at: now, updated_at: now } },
+      );
       outcome = "refund_updated";
     }
 
-    await db
-      .prepare("UPDATE webhook_events SET status = ?, processed_at = ? WHERE provider = 'razorpay' AND event_id = ?")
-      .bind(outcome === "ignored" ? "ignored" : "processed", new Date().toISOString(), eventId)
-      .run();
+    await db.webhook_events.updateOne(
+      { provider: "razorpay", event_id: eventId },
+      { $set: { status: outcome === "ignored" ? "ignored" : "processed", processed_at: new Date().toISOString() } },
+    );
   } catch (error) {
-    await db
-      .prepare("UPDATE webhook_events SET status = 'failed', error = ? WHERE provider = 'razorpay' AND event_id = ?")
-      .bind(error instanceof Error ? error.message.slice(0, 300) : "unknown", eventId)
-      .run();
+    await db.webhook_events.updateOne(
+      { provider: "razorpay", event_id: eventId },
+      { $set: { status: "failed", error: error instanceof Error ? error.message.slice(0, 300) : "unknown" } },
+    );
     throw error;
   }
 
@@ -405,10 +407,14 @@ export async function handleRazorpayWebhook(
 }
 
 export async function orderItemsForTracking(orderId: string) {
-  return allRows<{ product_name: string; variant_name: string; quantity: number; line_total: number }>(
-    "SELECT product_name, variant_name, quantity, line_total FROM order_items WHERE order_id = ?",
-    [orderId],
-  );
+  const db = await (await import("../db")).getDb();
+  const rows = await db.order_items.find({ order_id: orderId }).toArray();
+  return (rows as any[]).map((r) => ({
+    product_name: r.product_name,
+    variant_name: r.variant_name,
+    quantity: r.quantity,
+    line_total: r.line_total,
+  }));
 }
 
 export { releaseOrder };

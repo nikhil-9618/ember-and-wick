@@ -20,30 +20,27 @@ export const POST = apiRoute(async (request) => {
   // A retried request (double tap, flaky network) must never create two orders.
   const idempotencyKey = input.idempotencyKey ? `${user.id}:order:${input.idempotencyKey}` : null;
   if (idempotencyKey) {
-    const existing = await db
-      .prepare("SELECT response_json FROM idempotency_keys WHERE key = ?")
-      .bind(idempotencyKey)
-      .first<{ response_json: string | null }>();
-    if (existing?.response_json) {
-      return json(JSON.parse(existing.response_json), { status: 201 });
+    const existing = await db.idempotency_keys.findOne({ _id: idempotencyKey });
+    if ((existing as any)?.response_json) {
+      return json(JSON.parse((existing as any).response_json), { status: 201 });
     }
   }
 
   const result = await createOrder(user.id, input.email ?? user.email, input);
 
   if (idempotencyKey) {
-    await db
-      .prepare(
-        "INSERT OR IGNORE INTO idempotency_keys (key, user_id, scope, request_hash, response_json, created_at) VALUES (?, ?, 'create_order', ?, ?, ?)",
-      )
-      .bind(
-        idempotencyKey,
-        user.id,
-        await sha256Hex(JSON.stringify({ addressId: input.addressId ?? null, coupon: input.couponCode ?? null })),
-        JSON.stringify(result),
-        new Date().toISOString(),
-      )
-      .run();
+    try {
+      await db.idempotency_keys.insertOne({
+        _id: idempotencyKey,
+        user_id: user.id,
+        scope: "create_order",
+        request_hash: await sha256Hex(JSON.stringify({ addressId: input.addressId ?? null, coupon: input.couponCode ?? null })),
+        response_json: JSON.stringify(result),
+        created_at: new Date().toISOString(),
+      } as any);
+    } catch {
+      // duplicate ignored
+    }
   }
 
   return json(result, { status: 201 });

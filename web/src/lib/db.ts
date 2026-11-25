@@ -1,237 +1,256 @@
-import type { D1Database, D1PreparedStatement, D1Result } from "./types-d1";
+import {
+  MongoClient,
+  type AggregateOptions,
+  type ClientSession,
+  type Collection,
+  type Db,
+  type Document,
+  type Filter,
+  type FindOptions,
+  type OptionalUnlessRequiredId,
+  type UpdateFilter,
+} from "mongodb";
 import { ensureDatabaseReady } from "./bootstrap";
+import type {
+  AddressDoc,
+  AuditLogDoc,
+  CartDoc,
+  CartItemDoc,
+  CategoryDoc,
+  ContactMessageDoc,
+  CouponDoc,
+  DeviceTokenDoc,
+  IdempotencyKeyDoc,
+  InventoryMovementDoc,
+  NotificationDoc,
+  OrderDoc,
+  OrderItemDoc,
+  OrderStatusHistoryDoc,
+  PaymentDoc,
+  ProductDoc,
+  ProductImageDoc,
+  ProductVariantDoc,
+  RateLimitDoc,
+  RefundDoc,
+  ReviewDoc,
+  SessionDoc,
+  SettingDoc,
+  SignupOtpChallengeDoc,
+  UserDoc,
+  WebhookEventDoc,
+  WishlistItemDoc,
+} from "./documents";
 
 /**
- * Database access for a SQLite-dialect store, on more than one host.
+ * MongoDB is the only data store.
  *
- * Every query in this project is plain SQLite, so the same SQL runs on:
+ * The storefront, admin dashboard and mobile API all read and write the same
+ * collections. Amounts are integer paise, timestamps are ISO-8601 strings (so
+ * they sort lexicographically, exactly as the previous SQL layer relied on) and
+ * ids are application-generated strings stored in `_id`.
  *
- *   - Cloudflare Workers, through the D1 binding `env.DB` (production today);
- *   - Vercel / any Node host, through libSQL (Turso) over HTTPS;
- *   - `next dev`, through a local libSQL file so no extra service is needed.
- *
- * The shape of the D1 API is small (`prepare`, `bind`, `first`, `all`, `run`,
- * `batch`), so libSQL is adapted to it instead of rewriting every statement.
- * `batch` stays a single transaction, which the checkout and payment paths rely
- * on for atomicity.
+ * Multi-document invariants (order + stock + ledger + history, payment capture,
+ * refunds) run inside a transaction. MongoDB transactions need a replica set;
+ * Atlas always provides one, and the local development instructions start one.
  */
 
-let cachedDb: D1Database | null = null;
-let cachedEnv: Record<string, string | undefined> | null = null;
+const DEFAULT_LOCAL_URI = "mongodb://127.0.0.1:27017/emberandwick";
 
-const LOCAL_DB_URL = "file:.data/ember-wick.db";
+let clientPromise: Promise<MongoClient> | null = null;
+let storePromise: Promise<Store> | null = null;
 
-interface LibsqlConfig {
-  url: string;
-  authToken?: string;
+export function mongoUri(): string {
+  const configured = (process.env.MONGODB_URI ?? "").trim();
+  if (configured) return configured;
+  if (process.env.NODE_ENV !== "production") return DEFAULT_LOCAL_URI;
+  throw new Error(
+    "MONGODB_URI is not set, so the store has no database. Add the connection string of a MongoDB " +
+      "Atlas cluster (or any MongoDB replica set) to the environment and redeploy.",
+  );
 }
 
-/**
- * Remote libSQL when configured, the local file during development, and nothing
- * in a production Node deployment without a database (a clear error beats a
- * half-working store that loses orders).
- */
-function libsqlConfig(): LibsqlConfig | null {
-  const turso = (process.env.TURSO_DATABASE_URL ?? "").trim();
-  if (turso) return { url: turso, authToken: (process.env.TURSO_AUTH_TOKEN ?? "").trim() || undefined };
-
-  const generic = (process.env.DATABASE_URL ?? "").trim();
-  if (/^(libsql|https?\+libsql|file):/i.test(generic)) {
-    return { url: generic, authToken: (process.env.TURSO_AUTH_TOKEN ?? "").trim() || undefined };
-  }
-
-  if (process.env.NODE_ENV !== "production") return { url: LOCAL_DB_URL };
-  return null;
-}
-
-/** True only inside the Workers runtime, where the D1 binding can exist. */
-function onWorkers(): boolean {
-  const agent = (globalThis as { navigator?: { userAgent?: string } }).navigator?.userAgent;
-  return agent === "Cloudflare-Workers";
-}
-
-async function cloudflareBinding(): Promise<D1Database | null> {
-  if (!onWorkers()) return null;
+export function databaseName(): string {
+  const explicit = (process.env.MONGODB_DB ?? "").trim();
+  if (explicit) return explicit;
   try {
-    const { getCloudflareContext } = await import("@opennextjs/cloudflare");
-    const context = await getCloudflareContext({ async: true });
-    return (context.env as { DB?: D1Database }).DB ?? null;
+    const path = new URL(mongoUri()).pathname.replace(/^\//, "").trim();
+    if (path) return path;
   } catch {
-    return null;
+    // A malformed URI is reported by the driver with a better message.
   }
+  return "emberandwick";
 }
 
-function d1Meta(result: { rowsAffected: number; lastInsertRowid?: bigint | number | null }) {
+async function connect(): Promise<MongoClient> {
+  if (!clientPromise) {
+    const client = new MongoClient(mongoUri(), {
+      serverSelectionTimeoutMS: 10_000,
+      maxPoolSize: 10,
+    });
+    clientPromise = client.connect().catch((error) => {
+      clientPromise = null;
+      throw error;
+    });
+  }
+  return clientPromise;
+}
+
+type Options = Record<string, unknown>;
+
+/** A collection where every call is automatically joined to the transaction. */
+function scoped<T extends Document>(collection: Collection<T>, session?: ClientSession) {
+  const withSession = (options?: Options): Options => ({
+    ...(options ?? {}),
+    ...(session ? { session } : {}),
+  });
+
   return {
-    changes: Number(result.rowsAffected ?? 0),
-    last_row_id: result.lastInsertRowid === undefined || result.lastInsertRowid === null
-      ? 0
-      : Number(result.lastInsertRowid),
+    findOne: (filter: Filter<T>, options?: FindOptions) =>
+      collection.findOne(filter, withSession(options as any) as any),
+    find: (filter: Filter<T> = {}, options?: FindOptions) =>
+      collection.find(filter, withSession(options as any) as any),
+    insertOne: (doc: OptionalUnlessRequiredId<T>, options?: Options) =>
+      collection.insertOne(doc, withSession(options)),
+    insertMany: (docs: OptionalUnlessRequiredId<T>[], options?: Options) =>
+      collection.insertMany(docs, withSession(options)),
+    updateOne: (filter: Filter<T>, update: UpdateFilter<T> | Document[], options?: Options) =>
+      collection.updateOne(filter, update, withSession(options)),
+    updateMany: (filter: Filter<T>, update: UpdateFilter<T> | Document[], options?: Options) =>
+      collection.updateMany(filter, update, withSession(options)),
+    deleteOne: (filter: Filter<T>, options?: Options) => collection.deleteOne(filter, withSession(options)),
+    deleteMany: (filter: Filter<T> = {}, options?: Options) => collection.deleteMany(filter, withSession(options)),
+    countDocuments: (filter: Filter<T> = {}, options?: Options) =>
+      collection.countDocuments(filter, withSession(options)),
+    aggregate: <R extends Document = Document>(pipeline: Document[], options?: AggregateOptions) =>
+      collection.aggregate<R>(pipeline, withSession(options as any) as any),
+    findOneAndUpdate: (filter: Filter<T>, update: UpdateFilter<T> | Document[], options?: Options) =>
+      collection.findOneAndUpdate(filter, update, {
+        ...withSession(options),
+        returnDocument: "after",
+      } as never),
+    createIndex: (indexSpec: Document, options?: Document) => collection.createIndex(indexSpec, options),
   };
 }
 
-/** libSQL accepts only these argument types; `undefined` becomes SQL NULL. */
-type LibsqlValue = string | number | bigint | ArrayBuffer | Uint8Array | boolean | null;
+export type Scoped<T extends Document> = ReturnType<typeof scoped<T>>;
 
-function toArgs(values: unknown[]): LibsqlValue[] {
-  return values.map((value) => (value === undefined ? null : (value as LibsqlValue)));
-}
+export class Store {
+  readonly users: Scoped<UserDoc>;
+  readonly sessions: Scoped<SessionDoc>;
+  readonly addresses: Scoped<AddressDoc>;
+  readonly categories: Scoped<CategoryDoc>;
+  readonly products: Scoped<ProductDoc>;
+  readonly product_images: Scoped<ProductImageDoc>;
+  readonly product_variants: Scoped<ProductVariantDoc>;
+  readonly carts: Scoped<CartDoc>;
+  readonly cart_items: Scoped<CartItemDoc>;
+  readonly wishlist_items: Scoped<WishlistItemDoc>;
+  readonly coupons: Scoped<CouponDoc>;
+  readonly orders: Scoped<OrderDoc>;
+  readonly order_items: Scoped<OrderItemDoc>;
+  readonly payments: Scoped<PaymentDoc>;
+  readonly refunds: Scoped<RefundDoc>;
+  readonly reviews: Scoped<ReviewDoc>;
+  readonly notifications: Scoped<NotificationDoc>;
+  readonly contact_messages: Scoped<ContactMessageDoc>;
+  readonly webhook_events: Scoped<WebhookEventDoc>;
+  readonly idempotency_keys: Scoped<IdempotencyKeyDoc>;
+  readonly rate_limits: Scoped<RateLimitDoc>;
+  readonly settings: Scoped<SettingDoc>;
+  readonly device_tokens: Scoped<DeviceTokenDoc>;
+  readonly order_status_history: Scoped<OrderStatusHistoryDoc>;
+  readonly admin_audit_log: Scoped<AuditLogDoc>;
+  readonly inventory_movements: Scoped<InventoryMovementDoc>;
+  readonly signup_otp_challenges: Scoped<SignupOtpChallengeDoc>;
 
-interface LibsqlResultSet {
-  rows: unknown[];
-  rowsAffected: number;
-  lastInsertRowid?: bigint | number | null;
-}
-
-interface LibsqlClient {
-  execute(statement: { sql: string; args: LibsqlValue[] }): Promise<LibsqlResultSet>;
-  batch(statements: { sql: string; args: LibsqlValue[] }[], mode?: "write" | "read" | "deferred"): Promise<LibsqlResultSet[]>;
-  close(): void;
-}
-
-class LibsqlStatement implements D1PreparedStatement {
   constructor(
-    private readonly db: LibsqlDatabase,
-    readonly sql: string,
-    readonly values: unknown[] = [],
-  ) {}
-
-  bind(...values: unknown[]): D1PreparedStatement {
-    return new LibsqlStatement(this.db, this.sql, values);
-  }
-
-  private async execute(): Promise<LibsqlResultSet> {
-    return this.db.client.execute({ sql: this.sql, args: toArgs(this.values) });
-  }
-
-  async first<T = Record<string, unknown>>(columnName?: string): Promise<T | null> {
-    const result = await this.execute();
-    const row = result.rows[0] as Record<string, unknown> | undefined;
-    if (!row) return null;
-    return (columnName ? row[columnName] : row) as T;
-  }
-
-  async all<T = Record<string, unknown>>(): Promise<D1Result<T>> {
-    const result = await this.execute();
-    return { results: result.rows as T[], success: true, meta: d1Meta(result) };
-  }
-
-  async run<T = Record<string, unknown>>(): Promise<D1Result<T>> {
-    // RETURNING clauses (used for rate limits) surface rows in `results`.
-    const result = await this.execute();
-    return { results: result.rows as T[], success: true, meta: d1Meta(result) };
-  }
-}
-
-class LibsqlDatabase implements D1Database {
-  constructor(readonly client: LibsqlClient) {}
-
-  prepare(query: string): D1PreparedStatement {
-    return new LibsqlStatement(this, query);
-  }
-
-  /** One transaction, matching D1: every statement commits or none does. */
-  async batch<T = Record<string, unknown>>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
-    const prepared = statements as LibsqlStatement[];
-    const results = await this.client.batch(
-      prepared.map((statement) => ({ sql: statement.sql, args: toArgs(statement.values) })),
-      "write",
-    );
-    return results.map((result) => ({
-      results: result.rows as T[],
-      success: true,
-      meta: d1Meta(result),
-    }));
-  }
-
-  async exec(query: string): Promise<{ count: number; duration: number }> {
-    const started = Date.now();
-    const statements = query
-      .split(";")
-      .map((statement) => statement.trim())
-      .filter(Boolean);
-    if (statements.length > 0) {
-      await this.client.batch(statements.map((sql) => ({ sql, args: [] })), "write");
-    }
-    return { count: statements.length, duration: Date.now() - started };
+    readonly db: Db,
+    readonly session?: ClientSession,
+  ) {
+    this.users = scoped(db.collection<UserDoc>("users"), session);
+    this.sessions = scoped(db.collection<SessionDoc>("sessions"), session);
+    this.addresses = scoped(db.collection<AddressDoc>("addresses"), session);
+    this.categories = scoped(db.collection<CategoryDoc>("categories"), session);
+    this.products = scoped(db.collection<ProductDoc>("products"), session);
+    this.product_images = scoped(db.collection<ProductImageDoc>("product_images"), session);
+    this.product_variants = scoped(db.collection<ProductVariantDoc>("product_variants"), session);
+    this.carts = scoped(db.collection<CartDoc>("carts"), session);
+    this.cart_items = scoped(db.collection<CartItemDoc>("cart_items"), session);
+    this.wishlist_items = scoped(db.collection<WishlistItemDoc>("wishlist_items"), session);
+    this.coupons = scoped(db.collection<CouponDoc>("coupons"), session);
+    this.orders = scoped(db.collection<OrderDoc>("orders"), session);
+    this.order_items = scoped(db.collection<OrderItemDoc>("order_items"), session);
+    this.payments = scoped(db.collection<PaymentDoc>("payments"), session);
+    this.refunds = scoped(db.collection<RefundDoc>("refunds"), session);
+    this.reviews = scoped(db.collection<ReviewDoc>("reviews"), session);
+    this.notifications = scoped(db.collection<NotificationDoc>("notifications"), session);
+    this.contact_messages = scoped(db.collection<ContactMessageDoc>("contact_messages"), session);
+    this.webhook_events = scoped(db.collection<WebhookEventDoc>("webhook_events"), session);
+    this.idempotency_keys = scoped(db.collection<IdempotencyKeyDoc>("idempotency_keys"), session);
+    this.rate_limits = scoped(db.collection<RateLimitDoc>("rate_limits"), session);
+    this.settings = scoped(db.collection<SettingDoc>("settings"), session);
+    this.device_tokens = scoped(db.collection<DeviceTokenDoc>("device_tokens"), session);
+    this.order_status_history = scoped(db.collection<OrderStatusHistoryDoc>("order_status_history"), session);
+    this.admin_audit_log = scoped(db.collection<AuditLogDoc>("admin_audit_log"), session);
+    this.inventory_movements = scoped(db.collection<InventoryMovementDoc>("inventory_movements"), session);
+    this.signup_otp_challenges = scoped(db.collection<SignupOtpChallengeDoc>("signup_otp_challenges"), session);
   }
 }
 
-async function createLibsqlDatabase(config: LibsqlConfig): Promise<LibsqlDatabase> {
-  if (config.url.startsWith("file:")) {
-    // A local file needs its directory; a remote URL never reaches this branch.
-    const directory = config.url.replace(/^file:/, "").split("/").slice(0, -1).join("/");
-    if (directory) {
-      const { mkdirSync } = await import("node:fs");
-      mkdirSync(directory, { recursive: true });
-    }
+/** The shared store, with collections created, indexed and (optionally) seeded. */
+export async function getDb(): Promise<Store> {
+  if (!storePromise) {
+    storePromise = (async () => {
+      const client = await connect();
+      const store = new Store(client.db(databaseName()));
+      await ensureDatabaseReady(store);
+      return store;
+    })().catch((error) => {
+      storePromise = null;
+      throw error;
+    });
   }
-  const { createClient } = await import("@libsql/client");
-  const client = createClient({
-    url: config.url,
-    ...(config.authToken ? { authToken: config.authToken } : {}),
-  }) as unknown as LibsqlClient;
-  return new LibsqlDatabase(client);
+  return storePromise;
 }
 
 /**
- * Resolves the database for this runtime: the Workers D1 binding when one exists,
- * otherwise libSQL (Turso in production, a local file in development).
+ * Runs `work` in a single MongoDB transaction, handing it a store that is bound
+ * to the session. Every write inside is committed together or not at all.
  */
-export async function getDb(): Promise<D1Database> {
-  if (cachedDb) return cachedDb;
-
-  const binding = await cloudflareBinding();
-  let db: D1Database;
-  if (binding) {
-    db = binding;
-  } else {
-    const config = libsqlConfig();
-    if (!config) {
-      throw new Error(
-        "No database is configured for this deployment. Set TURSO_DATABASE_URL and TURSO_AUTH_TOKEN " +
-          "(a free libSQL database), or deploy to Cloudflare where the D1 binding is provided.",
-      );
-    }
-    db = await createLibsqlDatabase(config);
-  }
-
-  await ensureDatabaseReady(db);
-  cachedDb = db;
-  return db;
-}
-
-/** Environment variables, from the Workers binding when present, else process.env. */
-export async function getEnv(): Promise<Record<string, string | undefined>> {
-  if (cachedEnv) return cachedEnv;
-  const base = { ...process.env } as Record<string, string | undefined>;
-  if (!onWorkers()) {
-    cachedEnv = base;
-    return cachedEnv;
-  }
+export async function withTransaction<T>(work: (tx: Store) => Promise<T>): Promise<T> {
+  const store = await getDb();
+  const client = await connect();
+  const session = client.startSession();
   try {
-    const { getCloudflareContext } = await import("@opennextjs/cloudflare");
-    const context = await getCloudflareContext({ async: true });
-    cachedEnv = { ...base, ...(context.env as Record<string, string | undefined>) };
-  } catch {
-    cachedEnv = base;
+    let result: T | undefined;
+    await session.withTransaction(
+      async () => {
+        result = await work(new Store(store.db, session));
+      },
+      { readConcern: { level: "snapshot" }, writeConcern: { w: "majority" } },
+    );
+    return result as T;
+  } finally {
+    await session.endSession();
   }
-  return cachedEnv;
 }
 
-export async function firstRow<T>(query: string, values: unknown[] = []): Promise<T | null> {
-  const db = await getDb();
-  return db.prepare(query).bind(...values).first<T>();
+/** Environment variables (Vercel process env, or the Workers binding when present). */
+export async function getEnv(): Promise<Record<string, string | undefined>> {
+  return { ...process.env } as Record<string, string | undefined>;
 }
 
-export async function allRows<T>(query: string, values: unknown[] = []): Promise<T[]> {
-  const db = await getDb();
-  const result = await db.prepare(query).bind(...values).all<T>();
-  return result.results ?? [];
+const REGEX_SPECIALS = /[.*+?^${}()|[\]\\]/g;
+
+/**
+ * Case-insensitive "contains" match, the MongoDB equivalent of `LIKE '%value%'`
+ * with the user's input escaped so a `%` or `(` cannot break the query.
+ */
+export function contains(value: string): RegExp {
+  return new RegExp(value.replace(REGEX_SPECIALS, "\\$&"), "i");
 }
 
-export async function run(query: string, values: unknown[] = []): Promise<number> {
-  const db = await getDb();
-  const result = await db.prepare(query).bind(...values).run();
-  return result.meta.changes ?? 0;
+/** MongoDB duplicate-key error, used where a unique index is the guard. */
+export function isDuplicateKeyError(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && (error as { code?: number }).code === 11000);
 }

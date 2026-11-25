@@ -4,10 +4,6 @@ import { randomId } from "@/lib/crypto";
 import { assertSameOrigin, apiRoute, json, readJson } from "@/lib/http";
 import { requireUser } from "@/lib/auth";
 
-/**
- * Stores an Expo push token for the signed-in user. Re-registering the same
- * device updates ownership rather than creating duplicates.
- */
 export const POST = apiRoute(async (request) => {
   assertSameOrigin(request);
   const { user } = await requireUser(request);
@@ -21,14 +17,21 @@ export const POST = apiRoute(async (request) => {
 
   const db = await getDb();
   const now = new Date().toISOString();
-  await db
-    .prepare(
-      `INSERT INTO device_tokens (id, user_id, token, platform, created_at, last_seen_at)
-       VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(token) DO UPDATE SET user_id = excluded.user_id, last_seen_at = excluded.last_seen_at`,
-    )
-    .bind(randomId("dev"), user.id, input.token, input.platform, now, now)
-    .run();
+  try {
+    await db.device_tokens.insertOne({
+      _id: randomId("dev"),
+      user_id: user.id,
+      token: input.token,
+      platform: input.platform,
+      created_at: now,
+      last_seen_at: now,
+    } as any);
+  } catch {
+    await db.device_tokens.updateOne(
+      { token: input.token },
+      { $set: { user_id: user.id, last_seen_at: now } },
+    );
+  }
 
   return json({ ok: true });
 });
@@ -41,6 +44,6 @@ export const DELETE = apiRoute(async (request) => {
     return json({ error: { code: "validation_error", message: "token is required." } }, { status: 422 });
   }
   const db = await getDb();
-  await db.prepare("DELETE FROM device_tokens WHERE token = ? AND user_id = ?").bind(token, user.id).run();
+  await db.device_tokens.deleteOne({ token, user_id: user.id });
   return json({ ok: true });
 });

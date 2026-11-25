@@ -1,8 +1,9 @@
-import { allRows, firstRow, getDb } from "../db";
+import { getDb } from "../db";
 import { randomId } from "../crypto";
 import { notFound, outOfStock } from "../errors";
 import { computeTotals, type Totals } from "../money";
 import type { CouponLike } from "../money";
+import type { Store } from "../db";
 
 export interface CartLine {
   id: string;
@@ -28,147 +29,6 @@ export interface CartSummary {
   totals: Totals;
 }
 
-interface CartRow {
-  id: string;
-  variant_id: string;
-  quantity: number;
-  variant_name: string;
-  sku: string;
-  price: number;
-  stock: number;
-  product_id: string;
-  product_name: string;
-  slug: string;
-  image_url: string | null;
-  image_alt: string | null;
-}
-
-export async function getCart(userId: string): Promise<CartSummary> {
-  const db = await getDb();
-  const cart = await firstRow<{ id: string }>("SELECT id FROM carts WHERE user_id = ?", [userId]);
-  if (!cart) {
-    const empty: Totals = computeTotals(0, 0);
-    return { cartId: "", items: [], itemCount: 0, subtotal: 0, totals: empty };
-  }
-
-  const rows = await allRows<CartRow>(
-    `SELECT ci.id, ci.variant_id, ci.quantity,
-            pv.name AS variant_name, pv.sku, pv.price, pv.stock,
-            p.id AS product_id, p.name AS product_name, p.slug,
-            (SELECT url FROM product_images pi WHERE pi.product_id = p.id ORDER BY pi.position ASC LIMIT 1) AS image_url,
-            (SELECT alt FROM product_images pi WHERE pi.product_id = p.id ORDER BY pi.position ASC LIMIT 1) AS image_alt
-       FROM cart_items ci
-       JOIN product_variants pv ON pv.id = ci.variant_id
-       JOIN products p ON p.id = pv.product_id
-      WHERE ci.cart_id = ?
-        AND pv.is_active = 1
-        AND p.status = 'active'
-      ORDER BY ci.created_at ASC`,
-    [cart.id],
-  );
-
-  const items: CartLine[] = rows.map((row) => ({
-    id: row.id,
-    variantId: row.variant_id,
-    productId: row.product_id,
-    productName: row.product_name,
-    productSlug: row.slug,
-    variantName: row.variant_name,
-    sku: row.sku,
-    unitPrice: row.price,
-    quantity: row.quantity,
-    lineTotal: row.price * row.quantity,
-    stock: row.stock,
-    imageUrl: row.image_url,
-    imageAlt: row.image_alt,
-  }));
-
-  const subtotal = items.reduce((sum, item) => sum + item.lineTotal, 0);
-  return {
-    cartId: cart.id,
-    items,
-    itemCount: items.reduce((sum, item) => sum + item.quantity, 0),
-    subtotal,
-    totals: computeTotals(subtotal, 0),
-  };
-}
-
-export async function ensureCart(userId: string): Promise<string> {
-  const existing = await firstRow<{ id: string }>("SELECT id FROM carts WHERE user_id = ?", [userId]);
-  if (existing) return existing.id;
-  const db = await getDb();
-  const id = randomId("cart");
-  const now = new Date().toISOString();
-  await db
-    .prepare("INSERT INTO carts (id, user_id, created_at, updated_at) VALUES (?, ?, ?, ?)")
-    .bind(id, userId, now, now)
-    .run();
-  return id;
-}
-
-export async function addToCart(userId: string, variantId: string, quantity: number): Promise<CartSummary> {
-  const db = await getDb();
-  const variant = await firstRow<{ id: string; stock: number; is_active: number; status: string }>(
-    `SELECT pv.id, pv.stock, pv.is_active, p.status
-       FROM product_variants pv JOIN products p ON p.id = pv.product_id
-      WHERE pv.id = ?`,
-    [variantId],
-  );
-  if (!variant || variant.is_active !== 1 || variant.status !== "active") {
-    throw notFound("That product is no longer available.");
-  }
-
-  const cartId = await ensureCart(userId);
-  const existing = await firstRow<{ id: string; quantity: number }>(
-    "SELECT id, quantity FROM cart_items WHERE cart_id = ? AND variant_id = ?",
-    [cartId, variantId],
-  );
-  const targetQty = Math.min(10, (existing?.quantity ?? 0) + quantity);
-  if (targetQty > variant.stock) {
-    throw outOfStock(`Only ${variant.stock} left in stock.`);
-  }
-
-  const now = new Date().toISOString();
-  if (existing) {
-    await db
-      .prepare("UPDATE cart_items SET quantity = ? WHERE id = ?")
-      .bind(targetQty, existing.id)
-      .run();
-  } else {
-    await db
-      .prepare("INSERT INTO cart_items (id, cart_id, variant_id, quantity, created_at) VALUES (?, ?, ?, ?, ?)")
-      .bind(randomId("ci"), cartId, variantId, quantity, now)
-      .run();
-  }
-  await db.prepare("UPDATE carts SET updated_at = ? WHERE id = ?").bind(now, cartId).run();
-  return getCart(userId);
-}
-
-export async function setCartQuantity(userId: string, variantId: string, quantity: number): Promise<CartSummary> {
-  const db = await getDb();
-  const cart = await firstRow<{ id: string }>("SELECT id FROM carts WHERE user_id = ?", [userId]);
-  if (!cart) return getCart(userId);
-
-  if (quantity === 0) {
-    await db.prepare("DELETE FROM cart_items WHERE cart_id = ? AND variant_id = ?").bind(cart.id, variantId).run();
-    return getCart(userId);
-  }
-
-  const variant = await firstRow<{ stock: number }>("SELECT stock FROM product_variants WHERE id = ?", [variantId]);
-  if (!variant) throw notFound("That product is no longer available.");
-  if (quantity > variant.stock) throw outOfStock(`Only ${variant.stock} left in stock.`);
-
-  await db
-    .prepare("UPDATE cart_items SET quantity = ? WHERE cart_id = ? AND variant_id = ?")
-    .bind(quantity, cart.id, variantId)
-    .run();
-  return getCart(userId);
-}
-
-export async function removeFromCart(userId: string, variantId: string): Promise<CartSummary> {
-  return setCartQuantity(userId, variantId, 0);
-}
-
 export interface CouponRow extends CouponLike {
   id: string;
   code: string;
@@ -179,11 +39,211 @@ export interface CouponRow extends CouponLike {
   used_count: number;
 }
 
-export async function findCoupon(code: string): Promise<CouponRow | null> {
-  return firstRow<CouponRow>(
-    `SELECT id, code, type, value, min_subtotal, max_discount, usage_limit, used_count,
-            starts_at, ends_at, is_active
-       FROM coupons WHERE code = ?`,
-    [code.toUpperCase()],
+async function hydrateCart(store: Store, cartId: string): Promise<CartSummary> {
+  const rows = await store.cart_items.find({ cart_id: cartId }).sort({ created_at: 1 }).toArray();
+  const variantIds = rows.map((r: any) => r.variant_id);
+  const variants = variantIds.length
+    ? await store.product_variants.find({ _id: { $in: variantIds } }).toArray()
+    : [];
+  const variantMap = new Map((variants as any[]).map((v) => [v._id, v]));
+  const productIds = [...new Set((variants as any[]).map((v) => v.product_id))];
+  const products = productIds.length ? await store.products.find({ _id: { $in: productIds }, status: "active" }).toArray() : [];
+  const productMap = new Map((products as any[]).map((p) => [p._id, p]));
+  const images = productIds.length
+    ? await store.product_images.find({ product_id: { $in: productIds } }).sort({ position: 1 }).toArray()
+    : [];
+  const imageMap = new Map<string, any>();
+  for (const img of images as any[]) if (!imageMap.has(img.product_id)) imageMap.set(img.product_id, img);
+
+  const items: CartLine[] = [];
+  for (const row of rows as any[]) {
+    const variant = variantMap.get(row.variant_id);
+    if (!variant || variant.is_active !== 1) continue;
+    const product = productMap.get(variant.product_id);
+    if (!product || product.status !== "active") continue;
+    const image = imageMap.get(product._id);
+    items.push({
+      id: row._id,
+      variantId: row.variant_id,
+      productId: product._id,
+      productName: product.name,
+      productSlug: product.slug,
+      variantName: variant.name,
+      sku: variant.sku,
+      unitPrice: variant.price,
+      quantity: row.quantity,
+      lineTotal: variant.price * row.quantity,
+      stock: variant.stock,
+      imageUrl: image?.url ?? null,
+      imageAlt: image?.alt ?? null,
+    });
+  }
+
+  const subtotal = items.reduce((sum, item) => sum + item.lineTotal, 0);
+  return {
+    cartId,
+    items,
+    itemCount: items.reduce((sum, item) => sum + item.quantity, 0),
+    subtotal,
+    totals: computeTotals(subtotal, 0),
+  };
+}
+
+export async function getCart(userId: string): Promise<CartSummary> {
+  const db = await getDb();
+  const cart = await db.carts.findOne({ user_id: userId });
+  if (!cart) {
+    const empty: Totals = computeTotals(0, 0);
+    return { cartId: "", items: [], itemCount: 0, subtotal: 0, totals: empty };
+  }
+  return hydrateCart(db, cart._id);
+}
+
+export async function ensureCart(userId: string): Promise<string> {
+  const db = await getDb();
+  const existing = await db.carts.findOne({ user_id: userId });
+  if (existing) return existing._id;
+  const id = randomId("cart");
+  const now = new Date().toISOString();
+  await db.carts.insertOne({ _id: id, user_id: userId, created_at: now, updated_at: now } as any);
+  return id;
+}
+
+export async function addToCart(userId: string, variantId: string, quantity: number): Promise<CartSummary> {
+  const db = await getDb();
+  const variant = await db.product_variants.findOne({ _id: variantId });
+  const product = variant ? await db.products.findOne({ _id: variant.product_id }) : null;
+  if (!variant || variant.is_active !== 1 || !product || product.status !== "active") {
+    throw notFound("That product is no longer available.");
+  }
+
+  const cartId = await ensureCart(userId);
+  const existing = await db.cart_items.findOne({ cart_id: cartId, variant_id: variantId });
+
+  const targetQty = Math.min(10, (existing?.quantity ?? 0) + quantity);
+  if (targetQty > variant.stock) {
+    throw outOfStock(`Only ${variant.stock} left in stock.`);
+  }
+
+  const now = new Date().toISOString();
+  if (existing) {
+    await db.cart_items.updateOne({ _id: existing._id }, { $set: { quantity: targetQty } });
+  } else {
+    await db.cart_items.insertOne({
+      _id: randomId("ci"),
+      cart_id: cartId,
+      variant_id: variantId,
+      quantity,
+      created_at: now,
+    } as any);
+  }
+  await db.carts.updateOne({ _id: cartId }, { $set: { updated_at: now } });
+  return getCart(userId);
+}
+
+export async function setCartQuantity(userId: string, variantId: string, quantity: number): Promise<CartSummary> {
+  const db = await getDb();
+  const cart = await db.carts.findOne({ user_id: userId });
+  if (!cart) return getCart(userId);
+
+  if (quantity === 0) {
+    await db.cart_items.deleteOne({ cart_id: cart._id, variant_id: variantId });
+    return getCart(userId);
+  }
+
+  const variant = await db.product_variants.findOne({ _id: variantId });
+  if (!variant) throw notFound("That product is no longer available.");
+  if (quantity > variant.stock) throw outOfStock(`Only ${variant.stock} left in stock.`);
+
+  await db.cart_items.updateOne(
+    { cart_id: cart._id, variant_id: variantId },
+    { $set: { quantity } },
   );
+  return getCart(userId);
+}
+
+export async function removeFromCart(userId: string, variantId: string): Promise<CartSummary> {
+  return setCartQuantity(userId, variantId, 0);
+}
+
+export async function findCoupon(code: string): Promise<CouponRow | null> {
+  const db = await getDb();
+  const row = await db.coupons.findOne({ code: code.toUpperCase() });
+  if (!row) return null;
+  return {
+    id: row._id,
+    code: row.code,
+    type: row.type as "percent" | "fixed",
+    value: row.value,
+    min_subtotal: row.min_subtotal,
+    max_discount: row.max_discount,
+    starts_at: row.starts_at,
+    ends_at: row.ends_at,
+    is_active: row.is_active,
+    usage_limit: row.usage_limit,
+    used_count: row.used_count,
+  };
+}
+
+export async function getCartWith(store: Store, userId: string): Promise<CartSummary> {
+  const cart = await store.carts.findOne({ user_id: userId });
+  if (!cart) {
+    const empty: Totals = computeTotals(0, 0);
+    return { cartId: "", items: [], itemCount: 0, subtotal: 0, totals: empty };
+  }
+  // reuse hydrate via store
+  const rows = await store.cart_items.find({ cart_id: cart._id }).sort({ created_at: 1 }).toArray();
+  const variantIds = rows.map((r: any) => r.variant_id);
+  const variants = variantIds.length ? await store.product_variants.find({ _id: { $in: variantIds } }).toArray() : [];
+  const variantMap = new Map((variants as any[]).map((v) => [v._id, v]));
+  const productIds = [...new Set((variants as any[]).map((v) => v.product_id))];
+  const products = productIds.length ? await store.products.find({ _id: { $in: productIds }, status: "active" }).toArray() : [];
+  const productMap = new Map((products as any[]).map((p) => [p._id, p]));
+  const images = productIds.length ? await store.product_images.find({ product_id: { $in: productIds } }).sort({ position: 1 }).toArray() : [];
+  const imageMap = new Map<string, any>();
+  for (const img of images as any[]) if (!imageMap.has(img.product_id)) imageMap.set(img.product_id, img);
+
+  const items: CartLine[] = [];
+  for (const row of rows as any[]) {
+    const variant = variantMap.get(row.variant_id);
+    if (!variant || variant.is_active !== 1) continue;
+    const product = productMap.get(variant.product_id);
+    if (!product || product.status !== "active") continue;
+    const image = imageMap.get(product._id);
+    items.push({
+      id: row._id,
+      variantId: row.variant_id,
+      productId: product._id,
+      productName: product.name,
+      productSlug: product.slug,
+      variantName: variant.name,
+      sku: variant.sku,
+      unitPrice: variant.price,
+      quantity: row.quantity,
+      lineTotal: variant.price * row.quantity,
+      stock: variant.stock,
+      imageUrl: image?.url ?? null,
+      imageAlt: image?.alt ?? null,
+    });
+  }
+  const subtotal = items.reduce((sum, item) => sum + item.lineTotal, 0);
+  return { cartId: cart._id, items, itemCount: items.reduce((s, i) => s + i.quantity, 0), subtotal, totals: computeTotals(subtotal, 0) };
+}
+
+export async function findCouponWith(store: Store, code: string): Promise<CouponRow | null> {
+  const row = await store.coupons.findOne({ code: code.toUpperCase() });
+  if (!row) return null;
+  return {
+    id: row._id,
+    code: row.code,
+    type: row.type as "percent" | "fixed",
+    value: row.value,
+    min_subtotal: row.min_subtotal,
+    max_discount: row.max_discount,
+    starts_at: row.starts_at,
+    ends_at: row.ends_at,
+    is_active: row.is_active,
+    usage_limit: row.usage_limit,
+    used_count: row.used_count,
+  };
 }

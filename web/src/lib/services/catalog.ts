@@ -1,4 +1,6 @@
-import { allRows, firstRow } from "../db";
+import { contains } from "../db";
+import { getDb } from "../db";
+import type { Store } from "../db";
 
 export interface ProductListItem {
   id: string;
@@ -73,12 +75,12 @@ function mapProduct(row: ProductRow): ProductListItem {
   };
 }
 
-const SORT_SQL: Record<ListProductsParams["sort"], string> = {
-  featured: "p.is_featured DESC, p.created_at DESC",
-  newest: "p.created_at DESC",
-  price_asc: "min_price ASC",
-  price_desc: "min_price DESC",
-  rating: "p.rating_avg DESC, p.rating_count DESC",
+const SORT_FIELD: Record<ListProductsParams["sort"], string> = {
+  featured: "is_featured",
+  newest: "created_at",
+  price_asc: "min_price",
+  price_desc: "min_price",
+  rating: "rating_avg",
 };
 
 export async function listProducts(params: ListProductsParams): Promise<{
@@ -88,57 +90,123 @@ export async function listProducts(params: ListProductsParams): Promise<{
   perPage: number;
   pages: number;
 }> {
-  const where: string[] = ["p.status = 'active'"];
-  const bindings: unknown[] = [];
+  const db = await getDb();
+  const match: Record<string, unknown> = { status: "active" };
 
   if (params.q) {
-    where.push("(p.name LIKE ? OR p.description LIKE ? OR p.scent_notes LIKE ?)");
-    const like = `%${params.q}%`;
-    bindings.push(like, like, like);
+    const rx = contains(params.q);
+    match.$or = [{ name: rx }, { description: rx }, { scent_notes: rx }];
   }
   if (params.category) {
-    where.push("c.slug = ?");
-    bindings.push(params.category);
+    const cat = await db.categories.findOne({ slug: params.category });
+    if (!cat) {
+      return { items: [], total: 0, page: params.page, perPage: params.perPage, pages: 1 };
+    }
+    match.category_id = cat._id;
   }
   if (params.scent) {
-    where.push("p.scent_notes LIKE ?");
-    bindings.push(`%${params.scent}%`);
+    match.scent_notes = contains(params.scent);
   }
+
+  const pipeline: Record<string, unknown>[] = [
+    { $match: match },
+    {
+      $lookup: {
+        from: "categories",
+        localField: "category_id",
+        foreignField: "_id",
+        as: "category",
+      },
+    },
+    {
+      $lookup: {
+        from: "product_variants",
+        let: { pid: "$_id" },
+        pipeline: [
+          { $match: { $expr: { $and: [{ $eq: ["$product_id", "$$pid"] }, { $eq: ["$is_active", 1] }] } } },
+        ],
+        as: "variants",
+      },
+    },
+    {
+      $lookup: {
+        from: "product_images",
+        let: { pid: "$_id" },
+        pipeline: [
+          { $match: { $expr: { $eq: ["$product_id", "$$pid"] } } },
+          { $sort: { position: 1 } },
+          { $limit: 1 },
+        ],
+        as: "images",
+      },
+    },
+    {
+      $addFields: {
+        category_name: { $ifNull: [{ $first: "$category.name" }, null] },
+        category_slug: { $ifNull: [{ $first: "$category.slug" }, null] },
+        min_price: { $min: "$variants.price" },
+        total_stock: { $sum: "$variants.stock" },
+        variant_count: { $size: "$variants" },
+        image_url: { $ifNull: [{ $first: "$images.url" }, null] },
+        image_alt: { $ifNull: [{ $first: "$images.alt" }, null] },
+      },
+    },
+  ];
+
   if (params.minPrice !== undefined) {
-    where.push("COALESCE(min_price, p.base_price) >= ?");
-    bindings.push(params.minPrice);
+    pipeline.push({ $match: { $expr: { $gte: [{ $ifNull: ["$min_price", "$base_price"] }, params.minPrice] } } });
   }
   if (params.maxPrice !== undefined) {
-    where.push("COALESCE(min_price, p.base_price) <= ?");
-    bindings.push(params.maxPrice);
+    pipeline.push({ $match: { $expr: { $lte: [{ $ifNull: ["$min_price", "$base_price"] }, params.maxPrice] } } });
   }
 
-  const whereSql = where.join(" AND ");
-  const from = `FROM products p
-                LEFT JOIN categories c ON c.id = p.category_id`;
-
-  const countRow = await firstRow<{ total: number }>(
-    `SELECT COUNT(*) AS total ${from} WHERE ${whereSql}`,
-    bindings,
-  );
-  const total = countRow?.total ?? 0;
+  const sortDir = params.sort === "price_asc" ? 1 : params.sort === "price_desc" ? -1 : -1;
+  const sortSpec: Record<string, number> = {};
+  if (params.sort === "newest") sortSpec.created_at = -1;
+  else if (params.sort === "rating") { sortSpec.rating_avg = -1; sortSpec.rating_count = -1; }
+  else if (params.sort === "featured") { sortSpec.is_featured = -1; sortSpec.created_at = -1; }
+  else { sortSpec.min_price = sortDir; }
+  sortSpec._id = 1;
 
   const offset = (params.page - 1) * params.perPage;
-  const rows = await allRows<ProductRow>(
-    `SELECT p.id, p.slug, p.name, p.tagline, p.base_price, p.compare_at_price, p.rating_avg, p.rating_count,
-            p.is_featured, p.scent_notes,
-            c.name AS category_name, c.slug AS category_slug,
-            (SELECT MIN(price) FROM product_variants v WHERE v.product_id = p.id AND v.is_active = 1) AS min_price,
-            (SELECT url FROM product_images pi WHERE pi.product_id = p.id ORDER BY pi.position ASC LIMIT 1) AS image_url,
-            (SELECT alt FROM product_images pi WHERE pi.product_id = p.id ORDER BY pi.position ASC LIMIT 1) AS image_alt,
-            (SELECT COALESCE(SUM(stock), 0) FROM product_variants v WHERE v.product_id = p.id AND v.is_active = 1) AS total_stock,
-            (SELECT COUNT(*) FROM product_variants v WHERE v.product_id = p.id AND v.is_active = 1) AS variant_count
-       ${from}
-      WHERE ${whereSql}
-      ORDER BY ${SORT_SQL[params.sort]}, p.id ASC
-      LIMIT ? OFFSET ?`,
-    [...bindings, params.perPage, offset],
-  );
+
+  const facet = await db.products
+    .aggregate<{
+      items: any[];
+      total: { n: number }[];
+    }>([
+      ...pipeline,
+      {
+        $facet: {
+          items: [{ $sort: sortSpec }, { $skip: offset }, { $limit: params.perPage }],
+          total: [{ $count: "n" }],
+        },
+      },
+    ])
+    .toArray();
+
+  const result = facet[0] ?? { items: [], total: [] };
+  const total = result.total[0]?.n ?? 0;
+
+  const rows: ProductRow[] = result.items.map((row: any) => ({
+    id: row._id,
+    slug: row.slug,
+    name: row.name,
+    tagline: row.tagline,
+    base_price: row.base_price,
+    compare_at_price: row.compare_at_price,
+    min_price: row.min_price ?? null,
+    rating_avg: row.rating_avg,
+    rating_count: row.rating_count,
+    is_featured: row.is_featured,
+    scent_notes: row.scent_notes,
+    category_name: row.category_name,
+    category_slug: row.category_slug,
+    image_url: row.image_url,
+    image_alt: row.image_alt,
+    total_stock: row.total_stock,
+    variant_count: row.variant_count,
+  }));
 
   return {
     items: rows.map(mapProduct),
@@ -181,45 +249,19 @@ export interface ProductDetail {
 }
 
 export async function getProductBySlug(slug: string): Promise<ProductDetail | null> {
-  const product = await firstRow<{
-    id: string;
-    slug: string;
-    name: string;
-    tagline: string | null;
-    description: string;
-    wax_type: string | null;
-    wick_type: string | null;
-    burn_time_hours: number | null;
-    scent_notes: string | null;
-    base_price: number;
-    compare_at_price: number | null;
-    currency: string;
-    rating_avg: number;
-    rating_count: number;
-    category_name: string | null;
-    category_slug: string | null;
-  }>(
-    `SELECT p.*, c.name AS category_name, c.slug AS category_slug
-       FROM products p LEFT JOIN categories c ON c.id = p.category_id
-      WHERE p.slug = ? AND p.status = 'active'`,
-    [slug],
-  );
+  const db = await getDb();
+  const product = await db.products.findOne({ slug, status: "active" });
   if (!product) return null;
 
-  const [images, variants] = await Promise.all([
-    allRows<{ url: string; alt: string }>(
-      "SELECT url, alt FROM product_images WHERE product_id = ? ORDER BY position ASC",
-      [product.id],
-    ),
-    allRows<{ id: string; name: string; sku: string; price: number; stock: number; weight_grams: number | null; is_active: number }>(
-      `SELECT id, name, sku, price, stock, weight_grams, is_active
-         FROM product_variants WHERE product_id = ? AND is_active = 1 ORDER BY position ASC, price ASC`,
-      [product.id],
-    ),
-  ]);
+  const category = product.category_id ? await db.categories.findOne({ _id: product.category_id }) : null;
+  const images = await db.product_images.find({ product_id: product._id }).sort({ position: 1 }).toArray();
+  const variants = await db.product_variants
+    .find({ product_id: product._id, is_active: 1 })
+    .sort({ position: 1, price: 1 })
+    .toArray();
 
   return {
-    id: product.id,
+    id: product._id,
     slug: product.slug,
     name: product.name,
     tagline: product.tagline,
@@ -233,17 +275,17 @@ export async function getProductBySlug(slug: string): Promise<ProductDetail | nu
     currency: product.currency,
     ratingAvg: product.rating_avg,
     ratingCount: product.rating_count,
-    categoryName: product.category_name,
-    categorySlug: product.category_slug,
-    images,
-    variants: variants.map((variant) => ({
-      id: variant.id,
-      name: variant.name,
-      sku: variant.sku,
-      price: variant.price,
-      stock: variant.stock,
-      weightGrams: variant.weight_grams,
-      isActive: variant.is_active === 1,
+    categoryName: category?.name ?? null,
+    categorySlug: category?.slug ?? null,
+    images: (images as any[]).map((i) => ({ url: i.url, alt: i.alt })),
+    variants: (variants as any[]).map((v) => ({
+      id: v._id,
+      name: v.name,
+      sku: v.sku,
+      price: v.price,
+      stock: v.stock,
+      weightGrams: v.weight_grams,
+      isActive: v.is_active === 1,
     })),
   };
 }
@@ -251,59 +293,58 @@ export async function getProductBySlug(slug: string): Promise<ProductDetail | nu
 export async function listCategories(): Promise<
   { id: string; slug: string; name: string; description: string | null; imageUrl: string | null; productCount: number }[]
 > {
-  const rows = await allRows<{
-    id: string;
-    slug: string;
-    name: string;
-    description: string | null;
-    image_url: string | null;
-    product_count: number;
-  }>(
-    `SELECT c.id, c.slug, c.name, c.description, c.image_url,
-            (SELECT COUNT(*) FROM products p WHERE p.category_id = c.id AND p.status = 'active') AS product_count
-       FROM categories c ORDER BY c.position ASC, c.name ASC`,
-  );
-  return rows.map((row) => ({
-    id: row.id,
-    slug: row.slug,
-    name: row.name,
-    description: row.description,
-    imageUrl: row.image_url,
-    productCount: row.product_count,
-  }));
+  const db = await getDb();
+  const categories = await db.categories.find({}).sort({ position: 1, name: 1 }).toArray();
+  const result: any[] = [];
+  for (const c of categories as any[]) {
+    const count = await db.products.countDocuments({ category_id: c._id, status: "active" });
+    result.push({
+      id: c._id,
+      slug: c.slug,
+      name: c.name,
+      description: c.description,
+      imageUrl: c.image_url,
+      productCount: count,
+    });
+  }
+  return result;
 }
 
 export async function listPublishedReviews(productId: string): Promise<
   { id: string; rating: number; title: string | null; body: string; author: string; createdAt: string }[]
 > {
-  const rows = await allRows<{ id: string; rating: number; title: string | null; body: string; author: string; created_at: string }>(
-    `SELECT r.id, r.rating, r.title, r.body, r.created_at, u.name AS author
-       FROM reviews r JOIN users u ON u.id = r.user_id
-      WHERE r.product_id = ? AND r.status = 'published'
-      ORDER BY r.created_at DESC LIMIT 50`,
-    [productId],
-  );
-  return rows.map((row) => ({
-    id: row.id,
-    rating: row.rating,
-    title: row.title,
-    body: row.body,
-    author: row.author.split(" ")[0] ?? "Customer",
-    createdAt: row.created_at,
-  }));
+  const db = await getDb();
+  const rows = await db.reviews
+    .find({ product_id: productId, status: "published" })
+    .sort({ created_at: -1 })
+    .limit(50)
+    .toArray();
+  const result: any[] = [];
+  for (const r of rows as any[]) {
+    const user = await db.users.findOne({ _id: r.user_id });
+    result.push({
+      id: r._id,
+      rating: r.rating,
+      title: r.title,
+      body: r.body,
+      author: (user?.name ?? "Customer").split(" ")[0],
+      createdAt: r.created_at,
+    });
+  }
+  return result;
 }
 
-/** Recomputes the denormalised rating on the product after moderation changes. */
 export async function refreshProductRating(productId: string): Promise<void> {
-  const { getDb } = await import("../db");
   const db = await getDb();
-  await db
-    .prepare(
-      `UPDATE products SET
-         rating_avg = COALESCE((SELECT AVG(rating) FROM reviews WHERE product_id = ? AND status = 'published'), 0),
-         rating_count = (SELECT COUNT(*) FROM reviews WHERE product_id = ? AND status = 'published')
-       WHERE id = ?`,
-    )
-    .bind(productId, productId, productId)
-    .run();
+  const agg = await db.reviews
+    .aggregate<{ avg: number; count: number }>([
+      { $match: { product_id: productId, status: "published" } },
+      { $group: { _id: null, avg: { $avg: "$rating" }, count: { $sum: 1 } } },
+    ])
+    .toArray();
+  const row = agg[0];
+  await db.products.updateOne(
+    { _id: productId },
+    { $set: { rating_avg: row?.avg ?? 0, rating_count: row?.count ?? 0 } },
+  );
 }

@@ -1,46 +1,46 @@
 import { z } from "zod";
-import { allRows, getDb } from "@/lib/db";
+import { getDb } from "@/lib/db";
 import { randomId } from "@/lib/crypto";
 import { assertSameOrigin, apiRoute, json, readJson } from "@/lib/http";
 import { notFound } from "@/lib/errors";
 import { requireUser } from "@/lib/auth";
 
 async function listWishlist(userId: string) {
-  const rows = await allRows<{
-    product_id: string;
-    slug: string;
-    name: string;
-    tagline: string | null;
-    price: number | null;
-    base_price: number;
-    image_url: string | null;
-    image_alt: string | null;
-    in_stock: number | null;
-    created_at: string;
-  }>(
-    `SELECT w.product_id, p.slug, p.name, p.tagline, p.base_price,
-            (SELECT MIN(price) FROM product_variants v WHERE v.product_id = p.id AND v.is_active = 1) AS price,
-            (SELECT url FROM product_images pi WHERE pi.product_id = p.id ORDER BY pi.position ASC LIMIT 1) AS image_url,
-            (SELECT alt FROM product_images pi WHERE pi.product_id = p.id ORDER BY pi.position ASC LIMIT 1) AS image_alt,
-            (SELECT COALESCE(SUM(stock), 0) FROM product_variants v WHERE v.product_id = p.id AND v.is_active = 1) AS in_stock,
-            w.created_at
-       FROM wishlist_items w JOIN products p ON p.id = w.product_id
-      WHERE w.user_id = ? AND p.status = 'active'
-      ORDER BY w.created_at DESC`,
-    [userId],
-  );
-  return rows.map((row) => ({
-    productId: row.product_id,
-    slug: row.slug,
-    name: row.name,
-    tagline: row.tagline,
-    price: row.price ?? row.base_price,
-    basePrice: row.base_price,
-    imageUrl: row.image_url,
-    imageAlt: row.image_alt,
-    inStock: (row.in_stock ?? 0) > 0,
-    addedAt: row.created_at,
-  }));
+  const db = await getDb();
+  const wishlist = await db.wishlist_items.find({ user_id: userId }).sort({ created_at: -1 }).toArray();
+  const productIds = (wishlist as any[]).map((w) => w.product_id);
+  const products = productIds.length ? await db.products.find({ _id: { $in: productIds }, status: "active" }).toArray() : [];
+  const productMap = new Map((products as any[]).map((p) => [p._id, p]));
+  const variants = productIds.length ? await db.product_variants.find({ product_id: { $in: productIds }, is_active: 1 }).toArray() : [];
+  const images = productIds.length ? await db.product_images.find({ product_id: { $in: productIds } }).sort({ position: 1 }).toArray() : [];
+  const imageMap = new Map<string, any>();
+  for (const img of images as any[]) if (!imageMap.has(img.product_id)) imageMap.set(img.product_id, img);
+  const stockMap = new Map<string, number>();
+  const priceMap = new Map<string, number>();
+  for (const v of variants as any[]) {
+    stockMap.set(v.product_id, (stockMap.get(v.product_id) ?? 0) + v.stock);
+    if (!priceMap.has(v.product_id) || v.price < priceMap.get(v.product_id)!) priceMap.set(v.product_id, v.price);
+  }
+
+  return (wishlist as any[])
+    .map((w) => {
+      const p = productMap.get(w.product_id);
+      if (!p) return null;
+      const img = imageMap.get(p._id);
+      return {
+        productId: p._id,
+        slug: p.slug,
+        name: p.name,
+        tagline: p.tagline,
+        price: priceMap.get(p._id) ?? p.base_price,
+        basePrice: p.base_price,
+        imageUrl: img?.url ?? null,
+        imageAlt: img?.alt ?? null,
+        inStock: (stockMap.get(p._id) ?? 0) > 0,
+        addedAt: w.created_at,
+      };
+    })
+    .filter(Boolean) as any[];
 }
 
 export const GET = apiRoute(async (request) => {
@@ -54,16 +54,19 @@ export const POST = apiRoute(async (request) => {
   const input = await readJson(request, z.object({ productId: z.string().min(3).max(80) }));
   const db = await getDb();
 
-  const product = await db
-    .prepare("SELECT id FROM products WHERE id = ? AND status = 'active'")
-    .bind(input.productId)
-    .first<{ id: string }>();
+  const product = await db.products.findOne({ _id: input.productId, status: "active" });
   if (!product) throw notFound("That candle is no longer available.");
 
-  await db
-    .prepare("INSERT OR IGNORE INTO wishlist_items (id, user_id, product_id, created_at) VALUES (?, ?, ?, ?)")
-    .bind(randomId("wl"), user.id, product.id, new Date().toISOString())
-    .run();
+  try {
+    await db.wishlist_items.insertOne({
+      _id: randomId("wl"),
+      user_id: user.id,
+      product_id: product._id,
+      created_at: new Date().toISOString(),
+    } as any);
+  } catch {
+    // duplicate ignored
+  }
 
   return json({ items: await listWishlist(user.id) }, { status: 201 });
 });
@@ -76,9 +79,6 @@ export const DELETE = apiRoute(async (request) => {
     return json({ error: { code: "validation_error", message: "productId is required." } }, { status: 422 });
   }
   const db = await getDb();
-  await db
-    .prepare("DELETE FROM wishlist_items WHERE user_id = ? AND product_id = ?")
-    .bind(user.id, productId)
-    .run();
+  await db.wishlist_items.deleteOne({ user_id: user.id, product_id: productId });
   return json({ items: await listWishlist(user.id) });
 });

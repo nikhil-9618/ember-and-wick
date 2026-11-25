@@ -12,33 +12,27 @@ export const PATCH = apiRoute<{ params: Promise<{ id: string }> }>(async (reques
   const input = await readJson(request, addressSchema);
   const db = await getDb();
 
-  const existing = await db
-    .prepare("SELECT id, is_default FROM addresses WHERE id = ? AND user_id = ?")
-    .bind(id, user.id)
-    .first<{ id: string; is_default: number }>();
+  const existing = await db.addresses.findOne({ _id: id, user_id: user.id });
   if (!existing) throw notFound("Address not found.");
 
   const now = new Date().toISOString();
-  await db
-    .prepare(
-      `UPDATE addresses SET label = ?, full_name = ?, phone = ?, line1 = ?, line2 = ?, city = ?, state = ?,
-              postal_code = ?, country = ?, updated_at = ? WHERE id = ? AND user_id = ?`,
-    )
-    .bind(
-      input.label || null,
-      input.fullName,
-      input.phone,
-      input.line1,
-      input.line2 || null,
-      input.city,
-      input.state,
-      input.postalCode,
-      input.country || "IN",
-      now,
-      id,
-      user.id,
-    )
-    .run();
+  await db.addresses.updateOne(
+    { _id: id, user_id: user.id },
+    {
+      $set: {
+        label: input.label || null,
+        full_name: input.fullName,
+        phone: input.phone,
+        line1: input.line1,
+        line2: input.line2 || null,
+        city: input.city,
+        state: input.state,
+        postal_code: input.postalCode,
+        country: input.country || "IN",
+        updated_at: now,
+      },
+    },
+  );
 
   return json({ addresses: await listAddresses(user.id) });
 });
@@ -48,21 +42,15 @@ export const DELETE = apiRoute<{ params: Promise<{ id: string }> }>(async (reque
   const { user } = await requireUser(request);
   const { id } = await params;
   const db = await getDb();
-  const existing = await db
-    .prepare("SELECT id, is_default FROM addresses WHERE id = ? AND user_id = ?")
-    .bind(id, user.id)
-    .first<{ id: string; is_default: number }>();
+  const existing = await db.addresses.findOne({ _id: id, user_id: user.id });
   if (!existing) throw notFound("Address not found.");
 
-  await db.prepare("DELETE FROM addresses WHERE id = ? AND user_id = ?").bind(id, user.id).run();
+  await db.addresses.deleteOne({ _id: id, user_id: user.id });
 
-  if (existing.is_default === 1) {
-    const next = await db
-      .prepare("SELECT id FROM addresses WHERE user_id = ? ORDER BY created_at DESC LIMIT 1")
-      .bind(user.id)
-      .first<{ id: string }>();
+  if ((existing as any).is_default === 1) {
+    const next = await db.addresses.findOne({ user_id: user.id }, { sort: { created_at: -1 } } as any);
     if (next) {
-      await db.prepare("UPDATE addresses SET is_default = 1 WHERE id = ?").bind(next.id).run();
+      await db.addresses.updateOne({ _id: (next as any)._id }, { $set: { is_default: 1 } });
     }
   }
 

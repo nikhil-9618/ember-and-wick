@@ -22,18 +22,19 @@ export const POST = apiRoute<{ params: Promise<{ slug: string }> }>(async (reque
 
   const input = await readJson(request, reviewSchema);
   const db = await getDb();
-  const existing = await db
-    .prepare("SELECT id FROM reviews WHERE product_id = ? AND user_id = ?")
-    .bind(product.id, user.id)
-    .first<{ id: string }>();
+  const existing = await db.reviews.findOne({ product_id: product.id, user_id: user.id });
   if (existing) throw conflict("You've already reviewed this candle.");
 
-  await db
-    .prepare(
-      "INSERT INTO reviews (id, product_id, user_id, rating, title, body, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)",
-    )
-    .bind(randomId("rev"), product.id, user.id, input.rating, input.title || null, input.body, new Date().toISOString())
-    .run();
+  await db.reviews.insertOne({
+    _id: randomId("rev"),
+    product_id: product.id,
+    user_id: user.id,
+    rating: input.rating,
+    title: input.title || null,
+    body: input.body,
+    status: "pending",
+    created_at: new Date().toISOString(),
+  } as any);
 
   return json(
     { ok: true, message: "Thank you — your review will appear once it has been checked." },

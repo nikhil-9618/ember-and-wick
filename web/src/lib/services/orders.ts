@@ -1,5 +1,5 @@
-import { allRows, firstRow, getDb } from "../db";
-import { ORDER_STATUS_LABELS, type OrderStatus, releasesInventory } from "../orders";
+import { getDb } from "../db";
+import { ORDER_STATUS_LABELS, type OrderStatus } from "../orders";
 import { listStatusHistory, type StatusHistoryEntry } from "../history";
 import { releaseOrder } from "./checkout";
 
@@ -58,7 +58,7 @@ export interface OrderView {
 }
 
 interface OrderRow {
-  id: string;
+  _id: string;
   number: string;
   user_id: string | null;
   email: string;
@@ -103,34 +103,17 @@ function parseAddress(raw: string): OrderAddress | null {
 }
 
 async function hydrateOrder(row: OrderRow): Promise<OrderView> {
-  const [items, payment, refunds, statusHistory] = await Promise.all([
-    allRows<{
-      id: string;
-      product_id: string;
-      product_name: string;
-      variant_name: string;
-      sku: string;
-      unit_price: number;
-      quantity: number;
-      line_total: number;
-    }>(
-      `SELECT id, product_id, product_name, variant_name, sku, unit_price, quantity, line_total
-         FROM order_items WHERE order_id = ? ORDER BY id ASC`,
-      [row.id],
-    ),
-    firstRow<{ provider: string; status: string; provider_payment_id: string | null }>(
-      "SELECT provider, status, provider_payment_id FROM payments WHERE order_id = ? ORDER BY created_at DESC LIMIT 1",
-      [row.id],
-    ),
-    allRows<{ id: string; amount: number; status: string; reason: string; created_at: string }>(
-      "SELECT id, amount, status, reason, created_at FROM refunds WHERE order_id = ? ORDER BY created_at DESC",
-      [row.id],
-    ),
-    listStatusHistory(row.id),
+  const db = await getDb();
+  const [items, payments, refunds, statusHistory] = await Promise.all([
+    db.order_items.find({ order_id: row._id }).sort({ _id: 1 }).toArray(),
+    db.payments.find({ order_id: row._id }).sort({ created_at: -1 }).limit(1).toArray(),
+    db.refunds.find({ order_id: row._id }).sort({ created_at: -1 }).toArray(),
+    listStatusHistory(row._id),
   ]);
 
+  const payment = (payments as any[])[0] ?? null;
   return {
-    id: row.id,
+    id: row._id,
     number: row.number,
     status: row.status,
     statusLabel: ORDER_STATUS_LABELS[row.status] ?? row.status,
@@ -153,8 +136,8 @@ async function hydrateOrder(row: OrderRow): Promise<OrderView> {
     deliveredAt: row.delivered_at,
     cancelledAt: row.cancelled_at,
     createdAt: row.created_at,
-    items: items.map((item) => ({
-      id: item.id,
+    items: (items as any[]).map((item) => ({
+      id: item._id,
       productId: item.product_id,
       productName: item.product_name,
       variantName: item.variant_name,
@@ -166,12 +149,12 @@ async function hydrateOrder(row: OrderRow): Promise<OrderView> {
     payment: payment
       ? { provider: payment.provider, status: payment.status, providerPaymentId: payment.provider_payment_id }
       : null,
-    refunds: refunds.map((refund) => ({
-      id: refund.id,
-      amount: refund.amount,
-      status: refund.status,
-      reason: refund.reason,
-      createdAt: refund.created_at,
+    refunds: (refunds as any[]).map((r) => ({
+      id: r._id,
+      amount: r.amount,
+      status: r.status,
+      reason: r.reason,
+      createdAt: r.created_at,
     })),
     statusHistory,
     canCancel: ["pending_payment", "payment_failed"].includes(row.status),
@@ -180,71 +163,77 @@ async function hydrateOrder(row: OrderRow): Promise<OrderView> {
   };
 }
 
-const ORDER_COLUMNS = `id, number, user_id, email, status, payment_status, subtotal, discount, shipping_fee,
-  tax, total, currency, coupon_code, shipping_address_json, notes, tracking_number, carrier,
-  placed_at, paid_at, shipped_at, delivered_at, cancelled_at, created_at`;
-
 export async function listUserOrders(userId: string): Promise<OrderView[]> {
-  const rows = await allRows<OrderRow>(
-    `SELECT ${ORDER_COLUMNS} FROM orders WHERE user_id = ? ORDER BY created_at DESC LIMIT 100`,
-    [userId],
-  );
-  return Promise.all(rows.map(hydrateOrder));
+  const db = await getDb();
+  const rows = await db.orders.find({ user_id: userId }).sort({ created_at: -1 }).limit(100).toArray();
+  return Promise.all((rows as any[]).map((r) => hydrateOrder(mapRow(r))));
 }
 
 export async function getOrderForUser(userId: string, number: string): Promise<OrderView | null> {
   const db = await getDb();
-  const row = await db
-    .prepare(`SELECT ${ORDER_COLUMNS} FROM orders WHERE number = ? AND user_id = ?`)
-    .bind(number, userId)
-    .first<OrderRow>();
-  return row ? hydrateOrder(row) : null;
+  const row = await db.orders.findOne({ number, user_id: userId });
+  return row ? hydrateOrder(mapRow(row)) : null;
 }
 
 export async function getOrderForAdmin(number: string): Promise<OrderView | null> {
   const db = await getDb();
-  const row = await db
-    .prepare(`SELECT ${ORDER_COLUMNS} FROM orders WHERE number = ?`)
-    .bind(number)
-    .first<OrderRow>();
-  return row ? hydrateOrder(row) : null;
+  const row = await db.orders.findOne({ number });
+  return row ? hydrateOrder(mapRow(row)) : null;
 }
 
 export async function listAllOrders(filter: { status?: string; q?: string; limit?: number }): Promise<OrderView[]> {
-  const where: string[] = [];
-  const bindings: unknown[] = [];
-  if (filter.status) {
-    where.push("status = ?");
-    bindings.push(filter.status);
-  }
+  const db = await getDb();
+  const query: Record<string, unknown> = {};
+  if (filter.status) query.status = filter.status;
   if (filter.q) {
-    where.push("(number LIKE ? OR email LIKE ?)");
-    bindings.push(`%${filter.q}%`, `%${filter.q}%`);
+    const rx = new RegExp(filter.q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    query.$or = [{ number: rx }, { email: rx }];
   }
-  const sql = `SELECT ${ORDER_COLUMNS} FROM orders ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-               ORDER BY created_at DESC LIMIT ?`;
-  const rows = await allRows<OrderRow>(sql, [...bindings, filter.limit ?? 100]);
-  return Promise.all(rows.map(hydrateOrder));
+  const rows = await db.orders.find(query).sort({ created_at: -1 }).limit(filter.limit ?? 100).toArray();
+  return Promise.all((rows as any[]).map((r) => hydrateOrder(mapRow(r))));
 }
 
-/**
- * Cancels a customer's unpaid order and returns its stock. Paid orders must go
- * through the admin refund flow instead, so money and inventory stay consistent.
- */
 export async function cancelUnpaidOrder(userId: string, number: string): Promise<OrderView> {
   const db = await getDb();
-  const row = await db
-    .prepare("SELECT id, status, payment_status, email FROM orders WHERE number = ? AND user_id = ?")
-    .bind(number, userId)
-    .first<{ id: string; status: OrderStatus; payment_status: string; email: string }>();
+  const row = await db.orders.findOne({ number, user_id: userId });
   if (!row) throw new Error("not_found");
-  if (row.payment_status === "paid") throw new Error("paid_order");
-  if (!releasesInventory(row.status) && row.status !== "pending_payment") throw new Error("not_cancellable");
-  await releaseOrder(row.id, "cancelled", {
-    actor: { type: "customer", id: userId, label: row.email },
+  const r = row as any;
+  if (r.payment_status === "paid") throw new Error("paid_order");
+  const { releasesInventory } = await import("../orders");
+  if (!releasesInventory(r.status) && r.status !== "pending_payment") throw new Error("not_cancellable");
+  await releaseOrder(r._id, "cancelled", {
+    actor: { type: "customer", id: userId, label: r.email },
     reason: "Cancelled by the customer",
   });
   const updated = await getOrderForUser(userId, number);
   if (!updated) throw new Error("not_found");
   return updated;
+}
+
+function mapRow(row: any): OrderRow {
+  return {
+    _id: row._id,
+    number: row.number,
+    user_id: row.user_id,
+    email: row.email,
+    status: row.status,
+    payment_status: row.payment_status,
+    subtotal: row.subtotal,
+    discount: row.discount,
+    shipping_fee: row.shipping_fee,
+    tax: row.tax,
+    total: row.total,
+    currency: row.currency,
+    coupon_code: row.coupon_code,
+    shipping_address_json: row.shipping_address_json,
+    notes: row.notes,
+    tracking_number: row.tracking_number,
+    carrier: row.carrier,
+    placed_at: row.placed_at,
+    paid_at: row.paid_at,
+    shipped_at: row.shipped_at,
+    delivered_at: row.delivered_at,
+    cancelled_at: row.cancelled_at,
+    created_at: row.created_at,
+  };
 }

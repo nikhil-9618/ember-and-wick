@@ -1,28 +1,26 @@
 import type { Metadata } from "next";
-import { allRows } from "@/lib/db";
+import { getDb } from "@/lib/db";
 import { CouponManager } from "@/components/admin/coupon-manager";
 
 export const metadata: Metadata = { title: "Coupons", robots: { index: false, follow: false } };
 
 export default async function AdminCouponsPage() {
-  const coupons = await allRows<{
-    id: string;
-    code: string;
-    description: string | null;
-    type: "percent" | "fixed";
-    value: number;
-    min_subtotal: number;
-    max_discount: number | null;
-    usage_limit: number | null;
-    used_count: number;
-    starts_at: string | null;
-    ends_at: string | null;
-    is_active: number;
-  }>(
-    `SELECT id, code, description, type, value, min_subtotal, max_discount, usage_limit, used_count,
-            starts_at, ends_at, is_active
-       FROM coupons ORDER BY created_at DESC`,
-  );
+  const db = await getDb();
+  const rows = await db.coupons.find({}).sort({ created_at: -1 }).toArray();
+  const coupons = (rows as any[]).map((c) => ({
+    id: c._id,
+    code: c.code,
+    description: c.description,
+    type: c.type,
+    value: c.value,
+    min_subtotal: c.min_subtotal,
+    max_discount: c.max_discount,
+    usage_limit: c.usage_limit,
+    used_count: c.used_count,
+    starts_at: c.starts_at,
+    ends_at: c.ends_at,
+    is_active: c.is_active,
+  }));
 
   return (
     <div>

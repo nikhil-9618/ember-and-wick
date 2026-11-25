@@ -1,27 +1,33 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { allRows } from "@/lib/db";
+import { getDb } from "@/lib/db";
 import { formatMoney } from "@/lib/money";
 
 export const metadata: Metadata = { title: "Products", robots: { index: false, follow: false } };
 
 export default async function AdminProductsPage() {
-  const products = await allRows<{
-    id: string;
-    slug: string;
-    name: string;
-    status: string;
-    base_price: number;
-    variant_count: number;
-    total_stock: number;
-    category_name: string | null;
-  }>(
-    `SELECT p.id, p.slug, p.name, p.status, p.base_price, c.name AS category_name,
-            (SELECT COUNT(*) FROM product_variants v WHERE v.product_id = p.id) AS variant_count,
-            (SELECT COALESCE(SUM(stock), 0) FROM product_variants v WHERE v.product_id = p.id) AS total_stock
-       FROM products p LEFT JOIN categories c ON c.id = p.category_id
-      ORDER BY p.created_at DESC`,
-  );
+  const db = await getDb();
+  const prods = await db.products.find({}).sort({ created_at: -1 }).toArray();
+  const categoryIds = [...new Set((prods as any[]).map((p) => p.category_id).filter(Boolean))];
+  const categories = categoryIds.length ? await db.categories.find({ _id: { $in: categoryIds } }).toArray() : [];
+  const catMap = new Map((categories as any[]).map((c) => [c._id, c]));
+  const variants = (prods as any[]).length ? await db.product_variants.find({ product_id: { $in: (prods as any[]).map((p) => p._id) } }).toArray() : [];
+  const vCount = new Map<string, number>();
+  const vStock = new Map<string, number>();
+  for (const v of variants as any[]) {
+    vCount.set(v.product_id, (vCount.get(v.product_id) ?? 0) + 1);
+    vStock.set(v.product_id, (vStock.get(v.product_id) ?? 0) + (v.stock ?? 0));
+  }
+  const products = (prods as any[]).map((p) => ({
+    id: p._id,
+    slug: p.slug,
+    name: p.name,
+    status: p.status,
+    base_price: p.base_price,
+    variant_count: vCount.get(p._id) ?? 0,
+    total_stock: vStock.get(p._id) ?? 0,
+    category_name: catMap.get(p.category_id)?.name ?? null,
+  }));
 
   return (
     <div>

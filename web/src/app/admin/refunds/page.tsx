@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { allRows } from "@/lib/db";
+import { getDb } from "@/lib/db";
 import { formatMoney } from "@/lib/money";
 import { RefundForm } from "@/components/admin/refund-form";
 import { RefundApproveButton } from "@/components/admin/refund-approve-button";
@@ -25,22 +25,36 @@ interface RefundListRow {
 }
 
 export default async function AdminRefundsPage() {
-  const [refunds, paymentConfig, policy, currentUser] = await Promise.all([
-    allRows<RefundListRow>(
-      `SELECT r.id, r.amount, r.reason, r.status, r.provider_refund_id, r.created_at, r.processed_at,
-              r.created_by, r.approved_by,
-              o.number AS order_number, o.email,
-              requester.email AS requested_by_email, approver.email AS approved_by_email
-         FROM refunds r
-         JOIN orders o ON o.id = r.order_id
-         LEFT JOIN users requester ON requester.id = r.created_by
-         LEFT JOIN users approver ON approver.id = r.approved_by
-        ORDER BY r.created_at DESC LIMIT 100`,
-    ),
+  const db = await getDb();
+  const [refundRows, paymentConfig, policy, currentUser] = await Promise.all([
+    db.refunds.find({}).sort({ created_at: -1 }).limit(100).toArray(),
     getPaymentConfig(),
     getRefundPolicy(),
     getCurrentUser(),
   ]);
+  const orderIds = [...new Set((refundRows as any[]).map((r) => r.order_id))];
+  const userIds = [...new Set((refundRows as any[]).flatMap((r) => [r.created_by, r.approved_by].filter(Boolean)))];
+  const [orders, users] = await Promise.all([
+    orderIds.length ? db.orders.find({ _id: { $in: orderIds } }).toArray() : Promise.resolve([]),
+    userIds.length ? db.users.find({ _id: { $in: userIds } }).toArray() : Promise.resolve([]),
+  ]);
+  const orderMap = new Map((orders as any[]).map((o) => [o._id, o]));
+  const userMap = new Map((users as any[]).map((u) => [u._id, u]));
+  const refunds: RefundListRow[] = (refundRows as any[]).map((r) => ({
+    id: r._id,
+    amount: r.amount,
+    reason: r.reason,
+    status: r.status,
+    provider_refund_id: r.provider_refund_id,
+    created_at: r.created_at,
+    processed_at: r.processed_at,
+    created_by: r.created_by,
+    approved_by: r.approved_by,
+    requested_by_email: r.created_by ? userMap.get(r.created_by)?.email ?? null : null,
+    approved_by_email: r.approved_by ? userMap.get(r.approved_by)?.email ?? null : null,
+    order_number: orderMap.get(r.order_id)?.number ?? "",
+    email: orderMap.get(r.order_id)?.email ?? "",
+  }));
 
   const pending = refunds.filter((refund) => refund.status === "requested");
 
