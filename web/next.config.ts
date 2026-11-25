@@ -1,12 +1,11 @@
 import type { NextConfig } from "next";
-import { initOpenNextCloudflareForDev } from "@opennextjs/cloudflare";
-
-// Makes env.DB available to `next dev` using the same D1 binding as Workers.
-initOpenNextCloudflareForDev({ configPath: "./freebuff.wrangler.jsonc" });
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   reactStrictMode: true,
+  // libSQL ships native bindings for Node and must not be bundled by the server
+  // compiler; the Workers build never imports it (D1 is used there).
+  serverExternalPackages: ["@libsql/client", "libsql"],
   allowedDevOrigins: process.env.PREVIEW_HOST ? [process.env.PREVIEW_HOST] : [],
   images: {
     deviceSizes: [360, 420, 640, 828, 1080, 1280, 1600, 1920],

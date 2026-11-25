@@ -7,8 +7,9 @@ Everything below is verified to be *unfinished or unverified*. Nothing here is p
 1. **Live Razorpay is untested.** The integration (server-side order creation, signature
    verification, webhook settlement, replay protection) is implemented and passes with the test
    provider and self-signed webhooks, but has never run against Razorpay with real credentials.
-   The public demo completes checkout with `PAYMENT_PROVIDER=demo`, which is simulated and labelled
-   as such; it is not evidence that a real payment works.
+   The `demo` payment mode has been removed: without Razorpay keys, checkout is paused with an
+   explicit message, and `PAYMENT_PROVIDER=test` is refused in production. Local runs of the full
+   suite still cover the test provider, but a real capture has never happened.
 2. **The mobile app has never been built or run.** `mobile/` typechecks with zero errors and all 18
    screens are implemented, but there is no device or simulator in this environment. Touch targets,
    deep links, keyboard handling and Android back behaviour are unverified.
@@ -31,10 +32,12 @@ Everything below is verified to be *unfinished or unverified*. Nothing here is p
 7. **Shipping is a flat rule, not a courier integration.** There is no live rate calculation, AWB or
    tracking-provider sync; order tracking reflects internal statuses only.
 8. **Product images are single-resolution files.** No responsive `srcset`/CDN variants are generated.
-9. **Hosting is Cloudflare-specific.** The data layer reads the D1 binding through
-   `getCloudflareContext()`, so a Vercel/Render/Railway deploy needs a managed SQL database and a
-   portable data layer first; copying the repo to one of those hosts without that port will start
-   but fail on the first query.
+9. **Vercel needs a libSQL database before it serves data.** The data layer is portable now (D1 on
+   Workers, libSQL/Turso on Node, a local file in development), but a Vercel deployment without
+   `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` has no storage and fails closed with a clear message.
+   Turso has not been provisioned in this environment (no account access here); the free database
+   takes about two minutes to create and both values are set in Vercel → Settings → Environment
+   Variables.
 
 ## Administration platform gaps (master prompt §03, §07–§39)
 

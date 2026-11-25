@@ -11,9 +11,54 @@ Deployments are made with the Sites tooling (`sites_prepare_next` → `sites_dep
 Next app with OpenNext and uploads the Worker plus static assets. The Worker serves `/api/v1/*` first
 and falls back to `env.ASSETS` for static files.
 
+## 0. Web on Vercel (libSQL / Turso)
+
+The data layer speaks plain SQLite and resolves its engine at runtime (`web/src/lib/db.ts`):
+
+| Runtime | Engine | How it is selected |
+| --- | --- | --- |
+| Cloudflare Workers | D1 binding `DB` | Only when the Workers runtime is detected |
+| Vercel / Node | libSQL over HTTPS (Turso) | `TURSO_DATABASE_URL` (+ `TURSO_AUTH_TOKEN`) |
+| `next dev` | libSQL file at `web/.data/ember-wick.db` | Automatic outside production |
+
+Every query, transaction (`batch`) and migration is unchanged between the three, so the behaviour
+verified locally is the behaviour on Vercel.
+
+```bash
+cd web
+npm ci
+npm run build          # Vercel runs this automatically (root directory: web)
+```
+
+Vercel project settings: framework **Next.js**, root directory **web**, install `npm ci`.
+
+### Required Vercel environment variables
+
+| Name | Value |
+| --- | --- |
+| `TURSO_DATABASE_URL` | `libsql://<database>-<org>.turso.io` |
+| `TURSO_AUTH_TOKEN` | database token from the Turso dashboard |
+| `BOOTSTRAP_DB` | `1` for the first deploy: applies the bundled migrations and seeds the catalogue, then can be removed |
+| `NEXT_PUBLIC_APP_URL` | the deployment URL (e.g. `https://ember-and-wick.vercel.app`) — inlined at build time, so set it before building |
+| `APP_ORIGIN` | the same URL |
+| `OTP_FROM_EMAIL` | `noreply@emberandwick.com` (a domain authenticated with Brevo or Resend) |
+| `EMAIL_FROM_NAME` | `Ember & Wick` |
+| `EMAIL_REPLY_TO` | `hello@emberandwick.com` |
+| `BREVO_API_KEY` or `RESEND_API_KEY` | provider key; without it sign-up returns `503 email_not_configured` |
+| `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` / `RAZORPAY_WEBHOOK_SECRET` | live or test keys; while they are missing checkout is paused with an explicit message instead of taking a fake payment |
+
+`PAYMENT_PROVIDER=test` is refused when `NODE_ENV=production`, so a Vercel deployment can never
+simulate a paid order.
+
+Creating the database (free tier): `npm i -g turso && turso auth signup && turso db create ember-and-wick`,
+then `turso db show ember-and-wick --url` and `turso db tokens create ember-and-wick`.
+
 ## 1. Web (Cloudflare Workers)
 
 Prerequisites: Node 22+, a Sites project with a D1 database bound as `DB`.
+
+Local development no longer needs Wrangler: `npm run dev` uses the libSQL file database above.
+`npm run db:migrate:local` (Wrangler) is only needed when you want to inspect the D1 copy.
 
 ```bash
 cd web
