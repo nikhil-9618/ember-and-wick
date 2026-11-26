@@ -78,8 +78,8 @@ export function ForgotPasswordForm() {
       </button>
 
       <p className="text-xs text-ink-soft">
-        The 6-digit code comes from our store address, <span className="text-ink">no-reply@emberandwick.com</span>, and
-        expires in 10 minutes. If an account exists for the address, you will receive one.
+        The 6-digit code comes from Ember &amp; Wick&apos;s email service and expires in 10 minutes. If an account
+        exists for the address, you will receive one.
       </p>
 
       <p className="text-center text-xs text-ink-soft">

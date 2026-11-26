@@ -15,8 +15,8 @@ export default async function ForgotPasswordPage() {
         <p className="eyebrow">Account recovery</p>
         <h1 className="mt-3 text-3xl">Forgot your password?</h1>
         <p className="mt-2 text-sm text-ink-soft">
-          Enter the email on your account and we&apos;ll send a one-time code from the store&apos;s own domain. You
-          never need to share your password with anyone.
+          Enter the email on your account and we&apos;ll send a one-time code to that address. You never need to
+          share your password with anyone.
         </p>
         <div className="mt-8">
           <ForgotPasswordForm />

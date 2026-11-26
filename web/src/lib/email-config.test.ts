@@ -2,12 +2,12 @@ import { describe, expect, it } from "vitest";
 import { senderAddressIssue } from "./services/email";
 
 describe("senderAddressIssue", () => {
-  it("accepts an address on the store's own domain", () => {
+  it("accepts an address on a domain the store owns", () => {
     expect(senderAddressIssue("no-reply@emberandwick.com")).toBeNull();
     expect(senderAddressIssue("  orders@shop.emberandwick.com  ")).toBeNull();
   });
 
-  it("rejects personal mailboxes so mail never comes from a private inbox", () => {
+  it("accepts a verified mailbox sender, which Brevo sends from its own authenticated domain", () => {
     for (const address of [
       "applepandu.1love@gmail.com",
       "someone@yahoo.co.in",
@@ -16,13 +16,12 @@ describe("senderAddressIssue", () => {
       "hello@icloud.com",
       "admin@rediffmail.com",
     ]) {
-      const issue = senderAddressIssue(address);
-      expect(issue, address).toContain("personal mailbox");
+      expect(senderAddressIssue(address), address).toBeNull();
     }
   });
 
-  it("matches the domain case-insensitively", () => {
-    expect(senderAddressIssue("Shop@GMAIL.com")).toContain("personal mailbox");
+  it("accepts mailbox domains case-insensitively", () => {
+    expect(senderAddressIssue("Shop@GMAIL.com")).toBeNull();
   });
 
   it("rejects malformed addresses", () => {

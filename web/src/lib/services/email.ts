@@ -2,23 +2,36 @@ import { getEnv } from "../db";
 import { ApiError } from "../errors";
 
 /**
- * Sign-up verification email delivery.
+ * Verification and password-reset code delivery.
  *
- * Mail is sent as the store, never from a personal mailbox. `OTP_FROM_EMAIL` must
- * be an address on a domain the store owns and has authenticated with the
- * provider (a Brevo sender domain or a Resend verified domain), so free mailbox
- * providers are rejected outright: a deployment cannot quietly fall back to a
- * Gmail address.
+ * Three free-tier HTTP providers are supported, because there is no SMTP: Brevo
+ * (`BREVO_API_KEY`, 300 emails/day free), MailerSend (`MAILERSEND_API_KEY`) and
+ * Resend (`RESEND_API_KEY`). Only a server-side key is used; the browser opens
+ * no third-party connection and never sees it.
  *
- * Two free-tier HTTP providers are supported, because there is no SMTP: Resend
- * (`RESEND_API_KEY`) and Brevo (`BREVO_API_KEY`). Only a server-side key is ever
- * used; the browser opens no third-party connection and never sees the key.
+ * The sender is `OTP_FROM_EMAIL`. It is either an address on a domain the store
+ * owns and has authenticated, or — when there is no domain yet — a mailbox the
+ * provider has verified as a sender. Brevo cannot authenticate a free domain, so
+ * it rewrites such a sender to the store's own authenticated Brevo domain
+ * (`<account>.brevosend.com`): the message still comes from an authenticated
+ * domain, and the code reaches real inboxes. That rewrite is why a mailbox
+ * sender is accepted here instead of rejected, and why Brevo is the default
+ * provider.
+ *
+ * Resend and MailerSend only send from a domain you control (or their own trial
+ * domain), so a free-mailbox sender is refused for them up front with an
+ * operator message rather than failing mid-signup.
+ *
+ * Provider choice: `EMAIL_PROVIDER` (brevo | mailersend | resend) wins when it
+ * is set; otherwise the first configured key in that same order is used. The
+ * explicit setting matters because the presence of a key says nothing about
+ * whether its sending domain finished verification.
  *
  * There is no on-screen fallback: an account is verified only by a code that
  * reached a real inbox.
  */
 
-const PERSONAL_MAILBOX_DOMAINS = new Set([
+const FREE_MAILBOX_DOMAINS = new Set([
   "gmail.com",
   "googlemail.com",
   "yahoo.com",
@@ -56,19 +69,56 @@ const PERSONAL_MAILBOX_DOMAINS = new Set([
 
 const DEFAULT_FROM_NAME = "Ember & Wick";
 
+type ProviderName = "brevo" | "mailersend" | "resend";
+
+const PROVIDER_ORDER: ProviderName[] = ["brevo", "mailersend", "resend"];
+
+const PROVIDER_KEY_ENV: Record<ProviderName, string> = {
+  brevo: "BREVO_API_KEY",
+  mailersend: "MAILERSEND_API_KEY",
+  resend: "RESEND_API_KEY",
+};
+
 function read(env: Record<string, string | undefined>, name: string): string | null {
   const value = process.env[name] ?? env[name];
   return value && value.trim().length > 0 ? value.trim() : null;
 }
 
-/** Why a sender address is unusable, or null when it is a valid store domain. */
+/** The domain of a sender address, lowercased, or null when it is malformed. */
+function senderDomain(fromEmail: string): string | null {
+  const match = /^[^@\s]+@([a-z0-9-]+(?:\.[a-z0-9-]+)+)$/i.exec(fromEmail.trim());
+  return match ? (match[1] ?? "").toLowerCase() : null;
+}
+
+/**
+ * Why a sender address is unusable, or null when it is well formed. A mailbox
+ * sender passes: Brevo turns it into an authenticated sender on its own domain.
+ */
 export function senderAddressIssue(fromEmail: string): string | null {
   const address = fromEmail.trim();
-  const match = /^[^@\s]+@([a-z0-9-]+(?:\.[a-z0-9-]+)+)$/i.exec(address);
-  if (!match) return `OTP_FROM_EMAIL (${address}) is not a valid email address.`;
-  const domain = (match[1] ?? "").toLowerCase();
-  if (PERSONAL_MAILBOX_DOMAINS.has(domain)) {
-    return `OTP_FROM_EMAIL (${address}) is a personal mailbox. Verification mail must be sent from an address on the store's own domain, for example no-reply@your-store-domain.com.`;
+  if (!senderDomain(address)) {
+    return `OTP_FROM_EMAIL (${address}) is not a valid email address.`;
+  }
+  return null;
+}
+
+interface Provider {
+  name: ProviderName;
+  key: string;
+}
+
+/** The selected provider, or null when none (or the selected one) is usable. */
+function resolveProvider(env: Record<string, string | undefined>): Provider | null {
+  const requested = read(env, "EMAIL_PROVIDER")?.toLowerCase();
+  if (requested) {
+    const name = PROVIDER_ORDER.find((candidate) => candidate === requested);
+    if (!name) return null;
+    const key = read(env, PROVIDER_KEY_ENV[name]);
+    return key ? { name, key } : null;
+  }
+  for (const name of PROVIDER_ORDER) {
+    const key = read(env, PROVIDER_KEY_ENV[name]);
+    if (key) return { name, key };
   }
   return null;
 }
@@ -80,18 +130,39 @@ export function senderAddressIssue(fromEmail: string): string | null {
  */
 export async function emailConfigIssue(): Promise<string | null> {
   const env = await getEnv();
-  const provider = read(env, "RESEND_API_KEY") ? "Resend" : read(env, "BREVO_API_KEY") ? "Brevo" : null;
-  if (!provider) {
-    return "No email provider is configured. Add BREVO_API_KEY or RESEND_API_KEY on the server.";
+  const requested = read(env, "EMAIL_PROVIDER")?.toLowerCase();
+
+  if (requested && !PROVIDER_ORDER.includes(requested as ProviderName)) {
+    return `EMAIL_PROVIDER (${requested}) must be one of: ${PROVIDER_ORDER.join(", ")}.`;
   }
+
+  const provider = resolveProvider(env);
+  if (!provider) {
+    if (requested) {
+      const keyEnv = PROVIDER_KEY_ENV[requested as ProviderName];
+      return `EMAIL_PROVIDER=${requested} is selected but ${keyEnv} is not set on the server.`;
+    }
+    return `No email provider is configured. Set ${PROVIDER_ORDER.map((name) => PROVIDER_KEY_ENV[name]).join(", ")}.`;
+  }
+
   const fromEmail = read(env, "OTP_FROM_EMAIL");
   if (!fromEmail) {
-    return `Email delivery needs a sender on the store's own domain. Set OTP_FROM_EMAIL, for example no-reply@your-store-domain.com, and authenticate that domain with ${provider}.`;
+    return `Set OTP_FROM_EMAIL to the sender verified with ${provider.name}. With Brevo a normal mailbox works, for example store@gmail.com; no domain or DNS is needed.`;
   }
-  return senderAddressIssue(fromEmail);
+
+  const formatIssue = senderAddressIssue(fromEmail);
+  if (formatIssue) return formatIssue;
+
+  const domain = senderDomain(fromEmail);
+  const isFreeMailbox = domain !== null && FREE_MAILBOX_DOMAINS.has(domain);
+  if (isFreeMailbox && provider.name !== "brevo") {
+    return `OTP_FROM_EMAIL (${fromEmail}) is a free mailbox, and ${provider.name} only sends from a domain you have verified. Use Brevo (EMAIL_PROVIDER=brevo with a verified mailbox sender), or set OTP_FROM_EMAIL to an address on a domain authenticated with ${provider.name}.`;
+  }
+
+  return null;
 }
 
-/** True when a provider and a store-domain sender are both configured. */
+/** True when a provider and a usable sender are both configured. */
 export async function emailConfigured(): Promise<boolean> {
   return (await emailConfigIssue()) === null;
 }
@@ -136,55 +207,99 @@ function passwordResetEmail(code: string): Mail {
   return { subject, text, html };
 }
 
-/** Sends a code as the store's own address through the configured provider. */
+interface Request {
+  url: string;
+  headers: Record<string, string>;
+  body: unknown;
+}
+
+function providerRequest(input: {
+  provider: Provider;
+  env: Record<string, string | undefined>;
+  fromEmail: string;
+  fromName: string;
+  replyTo: string | null;
+  to: string;
+  mail: Mail;
+}): Request {
+  const { provider, env, fromEmail, fromName, replyTo, to, mail } = input;
+
+  if (provider.name === "brevo") {
+    return {
+      url: "https://api.brevo.com/v3/smtp/email",
+      headers: { "api-key": provider.key, "Content-Type": "application/json" },
+      body: {
+        sender: { email: fromEmail, name: fromName },
+        to: [{ email: to }],
+        subject: mail.subject,
+        textContent: mail.text,
+        htmlContent: mail.html,
+        ...(replyTo ? { replyTo: { email: replyTo } } : {}),
+      },
+    };
+  }
+
+  if (provider.name === "mailersend") {
+    return {
+      url: "https://api.mailersend.com/v1/email",
+      headers: { Authorization: `Bearer ${provider.key}`, "Content-Type": "application/json" },
+      body: {
+        from: { email: fromEmail, name: fromName },
+        to: [{ email: to }],
+        subject: mail.subject,
+        text: mail.text,
+        html: mail.html,
+        ...(replyTo ? { reply_to: { email: replyTo } } : {}),
+      },
+    };
+  }
+
+  // EMAIL_API_BASE lets an operator (and the integration suite) point delivery
+  // at a Resend-compatible gateway instead of the public API.
+  const base = read(env, "EMAIL_API_BASE") ?? "https://api.resend.com";
+  return {
+    url: `${base.replace(/\/$/, "")}/emails`,
+    headers: { Authorization: `Bearer ${provider.key}`, "Content-Type": "application/json" },
+    body: {
+      from: `${fromName} <${fromEmail}>`,
+      to: [to],
+      subject: mail.subject,
+      text: mail.text,
+      html: mail.html,
+      ...(replyTo ? { reply_to: replyTo } : {}),
+    },
+  };
+}
+
+/** Sends a code through the configured provider. */
 async function deliverEmail(to: string, mail: Mail): Promise<void> {
   const env = await getEnv();
   const issue = await emailConfigIssue();
   if (issue) throw new ApiError("email_not_configured", issue, 503);
 
-  const resendKey = read(env, "RESEND_API_KEY");
-  const brevoKey = read(env, "BREVO_API_KEY");
-  const fromEmail = read(env, "OTP_FROM_EMAIL")!;
-  const fromName = read(env, "EMAIL_FROM_NAME") ?? DEFAULT_FROM_NAME;
-  const replyTo = read(env, "EMAIL_REPLY_TO");
-
-  if (resendKey) {
-    // EMAIL_API_BASE lets an operator (and the integration suite) point delivery
-    // at a Resend-compatible gateway instead of the public API.
-    const base = read(env, "EMAIL_API_BASE") ?? "https://api.resend.com";
-    const response = await fetch(`${base.replace(/\/$/, "")}/emails`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        from: `${fromName} <${fromEmail}>`,
-        to: [to],
-        subject: mail.subject,
-        text: mail.text,
-        html: mail.html,
-        ...(replyTo ? { reply_to: replyTo } : {}),
-      }),
-    });
-    if (!response.ok) {
-      console.error("[email] resend delivery failed:", response.status);
-      throw new ApiError("email_error", "We couldn't send the email. Please try again.", 502);
-    }
-    return;
-  }
-
-  const response = await fetch("https://api.brevo.com/v3/smtp/email", {
-    method: "POST",
-    headers: { "api-key": brevoKey!, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      sender: { email: fromEmail, name: fromName },
-      to: [{ email: to }],
-      subject: mail.subject,
-      textContent: mail.text,
-      htmlContent: mail.html,
-      ...(replyTo ? { replyTo: { email: replyTo } } : {}),
-    }),
+  const provider = resolveProvider(env)!;
+  const request = providerRequest({
+    provider,
+    env,
+    fromEmail: read(env, "OTP_FROM_EMAIL")!,
+    fromName: read(env, "EMAIL_FROM_NAME") ?? DEFAULT_FROM_NAME,
+    replyTo: read(env, "EMAIL_REPLY_TO"),
+    to,
+    mail,
   });
+
+  const response = await fetch(request.url, {
+    method: "POST",
+    headers: request.headers,
+    body: JSON.stringify(request.body),
+  });
+
   if (!response.ok) {
-    console.error("[email] brevo delivery failed:", response.status);
+    // The provider's own message is the only thing that explains a rejection
+    // (unverified sender, exhausted free quota, revoked key), so it goes to the
+    // server log — never to the browser.
+    const detail = (await response.text().catch(() => "")).slice(0, 300);
+    console.error(`[email] ${provider.name} delivery failed:`, response.status, detail);
     throw new ApiError("email_error", "We couldn't send the email. Please try again.", 502);
   }
 }
